@@ -1,0 +1,68 @@
+# =============================================================================
+# Middle arm -- ARM-ONLY variant (default).
+#
+# ubuntu:22.04 base, no ZED, no CUDA, no GPU required. Bring this up first: it
+# proves the DYNAMIXEL chain (U2D2 -> /dev/ttyDXL -> servos) works without
+# dragging in the CUDA/ZED stack, and it builds in ~20-30 min instead of ~45
+# with a ~15 GB pull.
+#
+# For the camera, layer the override on top -- it flips BASE_IMAGE + WITH_ZED
+# and adds the GPU reservation:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.zed.yml build
+#
+# The GPU reservation lives ONLY in that override, deliberately: it needs
+# nvidia-container-toolkit on the host, and if it sat here the default build
+# would fail on any machine without it with
+#   could not select device driver "nvidia" with capabilities: [[gpu]]
+# =============================================================================
+services:
+  middle-arm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+      args:
+        USER_UID: ${UID:-1000}
+        USER_GID: ${GID:-1000}
+        # Passed explicitly rather than leaning on the Dockerfile defaults, so
+        # that reading this file tells you which variant you get.
+        BASE_IMAGE: ubuntu:22.04
+        WITH_ZED: "false"
+        WITH_MOVEIT: "false"       # "true" also builds interbotix_xsarm_moveit
+    image: middle-arm:latest
+    container_name: middle-arm
+
+    # Same host networking + ROS_DOMAIN_ID as the wxai_v0 container, so all
+    # containers share one DDS graph and `ros2 topic list` sees every arm.
+    network_mode: host
+
+    # For the arm alone this is heavier than strictly necessary -- the tighter
+    # form is `devices: [/dev/ttyDXL]` plus `device_cgroup_rules: ["c 188:* rmw"]`
+    # (188 is ttyUSB; the U2D2 is an FTDI part, so it enumerates there, not 189).
+    # Kept as-is because a `devices:` entry makes `up` fail outright whenever the
+    # U2D2 is unplugged, and because the ZED override needs privileged anyway:
+    # the SDK enumerates the camera over raw USB and the device re-enumerates at
+    # a new bus address on every camera reset, so a static device list goes stale
+    # the first time the camera hiccups.
+    privileged: true
+
+    environment:
+      - ROBOT_MODEL=wx250s
+      - ROBOT_NAME=middle           # ROS namespace; matches AV-ALOHA's "middle" arm
+      - DXL_PORT=/dev/ttyDXL        # created by the host udev rule, see host-setup/
+      - ROS_DOMAIN_ID=0
+      # Pinned explicitly rather than left to the default: a DDS mismatch between
+      # containers produces a silent no-discovery failure that looks like a
+      # network problem. The same value is set in ../manip-arm/docker-compose.yml.
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+
+    volumes:
+      - /dev:/dev
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./workspace:/home/robot/workspace
+
+    stdin_open: true
+    tty: true

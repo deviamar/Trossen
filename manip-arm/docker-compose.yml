@@ -1,0 +1,88 @@
+# =============================================================================
+# The two WXAI manipulator arms, one container each.
+#
+# Both share a single image (`image:` is set explicitly and identically, so
+# `docker compose build` builds once and both services reuse the result) and
+# differ only in container_name and ARM_IP.
+#
+# The arms are reached over Ethernet through the Trendnet switch, so both
+# containers need network_mode: host -- see the anchor comment below. Nothing
+# here configures that network: the host NIC must already hold 192.168.1.1/24
+# and be UP before `up` is useful. See README.md.
+#
+# ARM IP ADDRESSES: every WXAI arm leaves the factory on 192.168.1.2. Two arms
+# on one switch both answering to .2 is an address conflict, and it does NOT
+# fail cleanly -- the driver connects to whichever replies first, so you get one
+# arm moving on both containers' commands. Re-address one arm (procedure in
+# README.md, "Two arms on one switch") BEFORE plugging both in.
+# =============================================================================
+
+# Anchors, not services: the `x-` prefix is the Compose-spec extension
+# namespace, so these blocks are merged into the services below but never
+# started as containers of their own.
+x-arm-common: &arm-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    network: host
+    args:
+      USER_UID: ${UID:-1000}
+      USER_GID: ${GID:-1000}
+  image: trossen-arm:latest
+
+  # Required: raw Ethernet access to the arm subnet, plus DDS multicast so these
+  # containers, the middle-arm container, and any host-side ROS 2 node all land
+  # in one graph. It also means the two arm containers share the host's network
+  # stack -- fine for DDS (many participants per host is normal), but any node
+  # that binds a fixed port can only run in one container at a time.
+  network_mode: host
+
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    - ./workspace:/home/robot/workspace
+
+  # RViz2 renders fine on llvmpipe (software GL). Re-enable the block below
+  # ONLY on a host with the NVIDIA container runtime installed — otherwise
+  # `up` fails with: could not select device driver "nvidia" with capabilities: [[gpu]]
+  # Also add NVIDIA_DRIVER_CAPABILITIES=all to `environment` when you do.
+  # deploy:
+  #   resources:
+  #     reservations:
+  #       devices:
+  #         - driver: nvidia
+  #           count: all
+  #           capabilities: [gpu]
+
+  stdin_open: true
+  tty: true
+
+# Written in mapping form rather than the usual `- KEY=value` list so that a
+# YAML merge key works inside it: a merge into a list is not a thing, and an
+# `environment:` list in a service would replace the shared one wholesale
+# rather than extending it.
+x-arm-env: &arm-env
+  ARM_MODEL: wxai_v0            # set to whatever your actual arm model string is
+  ROS_DOMAIN_ID: "0"
+  # Pinned explicitly rather than left to the default: a DDS implementation
+  # mismatch between containers produces a silent no-discovery failure that
+  # looks like a network problem. Same value as ../middle-arm/docker-compose.yml.
+  RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+  DISPLAY: "${DISPLAY:-:0}"
+  QT_X11_NO_MITSHM: "1"         # avoids a common Qt/RViz X11 shared-memory glitch in containers
+
+services:
+  arm-1:
+    <<: *arm-common
+    container_name: trossen-arm-1
+    environment:
+      <<: *arm-env
+      ARM_IP: "${ARM_1_IP:-192.168.1.2}"
+
+  arm-2:
+    <<: *arm-common
+    container_name: trossen-arm-2
+    environment:
+      <<: *arm-env
+      # The re-addressed arm. Factory default is .2 for both, so this one has
+      # had set_manual_ip("192.168.1.3") written to its controller.
+      ARM_IP: "${ARM_2_IP:-192.168.1.3}"

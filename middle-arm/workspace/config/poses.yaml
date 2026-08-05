@@ -1,0 +1,30 @@
+# Named poses for the middle arm. Radians, in joint_order:
+#   [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate]
+# Written by pose.py -- 'pose.py save <name>' captures the live pose.
+#
+# Only two poses are seeded here, and both come from the vendor config rather
+# than from guesswork:
+#   sleep - sleep_positions in wx250s_nogripper.yaml, gripper value dropped
+#   home  - all zeros, the arm's kinematic zero (upper arm vertical)
+#
+# Add your own with `./pose.py save <name>` after driving the arm there. That is
+# the reliable way to author poses: a pose typed from estimated angles is
+# usually a little wrong, and you find out while the arm is already moving.
+#
+# Careful with `home` from a folded start: it is a large move on several joints
+# at once, including the roll axes that carry the camera. Check it with
+# `./pose.py go home` (dry run) and look at the delta column before executing.
+home:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+sleep:
+- 0.0
+- -1.8
+- 1.55
+- 0.0
+- 0.8
+- 0.0

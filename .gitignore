@@ -1,0 +1,28 @@
+# Machine-specific: UID/GID differ per host, so this is generated rather than
+# committed. See .env.example and the top-level README.
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+
+# colcon build artifacts inside the bind-mounted workspaces. Only src/ and the
+# hand-written scripts belong in git -- build/, install/ and log/ are outputs,
+# and install/ in particular is full of absolute paths from whichever machine
+# produced it, which makes it actively harmful to share.
+*/workspace/build/
+*/workspace/install/
+*/workspace/log/
+
+# Recorded data. Keep episodes out of the code repo -- they are large, binary,
+# and versioning them here will make the repo unusable within a few sessions.
+*/workspace/data/
+*/workspace/datasets/
+*.bag
+*.mcap
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store

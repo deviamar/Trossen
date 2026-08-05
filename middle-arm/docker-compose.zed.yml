@@ -1,0 +1,58 @@
+# =============================================================================
+# Middle arm -- WITH-ZED override. Layer on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.zed.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.zed.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.zed.yml exec middle-arm bash
+#
+# Everything ZED- and GPU-specific is isolated here so the default build stays
+# portable. Requires on the host: an NVIDIA GPU + nvidia-container-toolkit
+# (host-setup/setup-host.sh installs it). Without the toolkit, `up` fails with
+#   could not select device driver "nvidia" with capabilities: [[gpu]]
+#
+# Note the image tag differs from the base -- the two variants are genuinely
+# different images (~5 GB vs ~20 GB) and must not overwrite each other, or an
+# arm-only rebuild silently clobbers the ZED image and vice versa.
+# =============================================================================
+services:
+  middle-arm:
+    build:
+      args:
+        # 'gl-devel' (not plain 'devel') carries the OpenGL stack RViz2 and the
+        # ZED tools need. ubuntu22.04 because Interbotix is Humble-only and
+        # Humble has apt binaries for jammy only. CUDA 12.8 is not freely
+        # choosable -- it is the only version gl-devel ships for SDK >= 5.2.
+        BASE_IMAGE: stereolabs/zed:5.4-gl-devel-cuda12.8-ubuntu22.04
+        WITH_ZED: "true"
+        # Pin to a tag or SHA once the setup is proven, so a rebuild on another
+        # machine reproduces this one instead of tracking upstream HEAD.
+        ZED_WRAPPER_REF: master
+    image: middle-arm:zed
+    environment:
+      # zedm | zed2i | zed | zedx ... must match the actual hardware.
+      # ZED X will NOT work on this machine: it is GMSL2, needs a capture card,
+      # and is Jetson-only. Confirm the model before the first build.
+      - ZED_CAMERA_MODEL=zedm
+      # The StereoLabs base asks the NVIDIA runtime for compute,video,utility
+      # only. 'graphics' and 'display' are additionally required or RViz2 and the
+      # ZED viewer get a software GL context (or none) despite the GPU being there.
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics,display
+
+    volumes:
+      # First camera launch optimizes the neural depth models for this specific
+      # GPU (several minutes), and per-camera factory calibration is fetched by
+      # serial. Persisted so a `down`/`up` cycle does not redo either.
+      - zed-resources:/usr/local/zed/resources
+      - zed-settings:/usr/local/zed/settings
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  zed-resources:
+  zed-settings:

@@ -1,0 +1,30 @@
+# Gripperless wx250s, TORQUE OFF -- read-only bring-up for hardware testing.
+#
+# Identical to modes_nogripper.yaml except `torque_enable: false`. xs_sdk still
+# opens the port, pings every motor in the config, and publishes real encoder
+# values to joint_states -- it just never energizes anything. The arm stays limp
+# and back-drivable throughout.
+#
+# This is the right first test against real hardware, because it separates two
+# questions that the normal launch answers at the same time:
+#   "does the DYNAMIXEL chain enumerate correctly?"   <- answered here, passively
+#   "does the arm hold position under torque?"        <- needs modes_nogripper.yaml
+#
+# If the gripper removal were still mis-configured, this surfaces it as a clean
+# startup failure on the missing ID with nothing energized and nothing to lurch.
+#
+# Back-drive a joint by hand while this runs and watch the matching entry in
+# `ros2 topic echo /middle/joint_states` move -- that is end-to-end proof the
+# encoders, the bus, the U2D2, and the container's /dev passthrough all work.
+#
+# NOTE: an arm with torque off is held up by nothing but friction and its own
+# brakes-free gearing. Support it, or park it low, before launching with this.
+groups:
+  arm:
+    operating_mode: position
+    profile_type: time
+    profile_velocity: 2000
+    profile_acceleration: 300
+    torque_enable: false
+
+singles:

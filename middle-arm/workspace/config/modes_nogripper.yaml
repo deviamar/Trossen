@@ -1,0 +1,21 @@
+# Operating modes for the gripperless wx250s. Pairs with wx250s_nogripper.yaml.
+#
+# Identical to the stock interbotix_xsarm_control config/modes.yaml except that
+# the `singles: gripper:` block is gone -- it set the gripper to pwm mode with
+# torque enabled, and there is no gripper motor (ID 9) on this arm any more.
+#
+# `arm` behavior is unchanged and is what makes the arm hold station on launch:
+# position mode + torque_enable seeds each goal from the present encoder reading,
+# so xs_sdk locks the arm wherever it physically is and commands no motion.
+groups:
+  arm:
+    operating_mode: position
+    profile_type: time
+    profile_velocity: 2000
+    profile_acceleration: 300
+    torque_enable: true
+
+# Left empty on purpose, mirroring how the stock configs express an empty
+# section (`sisters:` in the motor config). There are no single-motor joints
+# left once the gripper is gone.
+singles:
