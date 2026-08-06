@@ -62,7 +62,10 @@ x-arm-common: &arm-common
 # rather than extending it.
 x-arm-env: &arm-env
   ARM_MODEL: wxai_v0            # set to whatever your actual arm model string is
-  ROS_DOMAIN_ID: "0"
+  # Deliberately NOT 0 -- see the matching note in ../middle-arm/docker-compose.yml.
+  # Zero is the ROS 2 default, so an unrelated teleop rig on the lab wifi lands in
+  # the same graph. Must match that file or the arms stop discovering each other.
+  ROS_DOMAIN_ID: "42"
   # Pinned explicitly rather than left to the default: a DDS implementation
   # mismatch between containers produces a silent no-discovery failure that
   # looks like a network problem. Same value as ../middle-arm/docker-compose.yml.

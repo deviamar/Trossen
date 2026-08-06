@@ -51,7 +51,13 @@ services:
       - ROBOT_MODEL=wx250s
       - ROBOT_NAME=middle           # ROS namespace; matches AV-ALOHA's "middle" arm
       - DXL_PORT=/dev/ttyDXL        # created by the host udev rule, see host-setup/
-      - ROS_DOMAIN_ID=0
+      # Deliberately NOT 0. Zero is the ROS 2 default, so every ROS 2 machine on
+      # the same network joins that graph -- on the lab wifi this host picked up
+      # a separate glove/IMU teleop rig (/glove/*, /wrist_imu/*, /right_hand)
+      # running on another computer. Harmless in itself, but it shares /tf and
+      # leaves /middle/commands/* reachable from the whole subnet. Must match
+      # ../manip-arm/docker-compose.yml or the two stop discovering each other.
+      - ROS_DOMAIN_ID=42
       # Pinned explicitly rather than left to the default: a DDS mismatch between
       # containers produces a silent no-discovery failure that looks like a
       # network problem. The same value is set in ../manip-arm/docker-compose.yml.
