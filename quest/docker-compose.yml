@@ -1,0 +1,99 @@
+# =============================================================================
+# Meta Quest teleop source.
+#
+# The only container that publishes into other components' namespaces, and the
+# only one with no hardware of its own beyond a network socket. No devices, no
+# privileges, no /dev mount -- if this container is compromised or simply wrong,
+# the worst it can do is publish bad ROS messages, and the governor and arm
+# agent are built on the assumption that it might.
+#
+# network_mode: host for two reasons here, not one. DDS, as everywhere else --
+# and the headset sends UDP to this machine's LAN address, which bridge
+# networking would put behind a NAT.
+# =============================================================================
+services:
+  quest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+      args:
+        USER_UID: ${UID:-1000}
+        USER_GID: ${GID:-1000}
+    image: quest-teleop:latest
+    container_name: quest
+    network_mode: host
+
+    # Share the host IPC namespace, which means sharing /dev/shm.
+    #
+    # NOT optional, and the failure it prevents is genuinely misleading: Fast DDS
+    # discovers peers over UDP -- which works, because network_mode: host gives
+    # every container one network stack -- but then negotiates SHARED MEMORY for
+    # the actual data on the same host. Each container gets its own private 64 MB
+    # /dev/shm by default, so the segments never match. The result is `ros2 topic
+    # list` showing everything, `ros2 topic info --verbose` showing a healthy
+    # publisher, and not one message ever arriving.
+    #
+    # slate-base appeared to work without this only because it mounts /dev:/dev
+    # for the serial port, which drags the host's /dev/shm in by accident. Set
+    # explicitly here so it is a decision rather than a side effect.
+    ipc: host
+
+    environment:
+      # true: start this container's nodes automatically (see start.sh)
+      # false: bare shell, for the CLIs that need the hardware to themselves
+      - AUTOSTART=true
+      - QUEST_NS=/quest
+      # Which namespace each hand drives. Changing these re-targets teleop
+      # without touching a line of code -- point them at a second pair of arms,
+      # or swap left and right if the rig is mirrored.
+      - QUEST_ARM_NS_LEFT=/left_arm
+      - QUEST_ARM_NS_RIGHT=/right_arm
+      - QUEST_BASE_NS=/slate
+      # Operator comfort limits. The real safety limit is CLAMP_VEL_* in
+      # slate-base, enforced by the governor, in the container that owns the
+      # serial port -- deliberately somewhere this file cannot raise it.
+      - QUEST_BASE_MAX_X=0.25
+      - QUEST_BASE_MAX_Z=0.6
+      # "y" = right stick forward/back turns (as specified for this rig).
+      # "x" = right stick left/right turns, which most people find natural.
+      - QUEST_TURN_AXIS=y
+      - QUEST_ARM_SCALE=1.0
+      - QUEST_MIDDLE_NS=/middle
+      - QUEST_SECRETS_DIR=/secrets
+      # The stereo pair pushed back to the headset, from the middle arm's ZED.
+      # Whatever resolution the ZED publishes is resized to STEREO_WIDTH x
+      # STEREO_HEIGHT before it goes down the wire, so the camera can stay
+      # configured for the rest of the rig.
+      # zed_wrapper publishes under <camera_name>/<node_name>/, and the middle
+      # arm launches it with camera_name:=middle_cam. Confirm with
+      # `ros2 topic list | grep image_rect` before trusting these.
+      - QUEST_STEREO_LEFT=/middle_cam/zed_node/left/image_rect_color
+      - QUEST_STEREO_RIGHT=/middle_cam/zed_node/right/image_rect_color
+      - QUEST_STEREO_WIDTH=640
+      - QUEST_STEREO_HEIGHT=480
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+    volumes:
+      - ./workspace:/home/robot/workspace
+      # WebRTC signalling secrets: a Firestore service account and the
+      # robotID/password/TURN settings. Read-only, and mounted rather than
+      # baked in -- they are credentials, and an image gets pushed around.
+      # Both are gitignored here exactly as they are upstream in giava.
+      - ./secrets:/secrets:ro
+
+
+    # Autostart: after `docker compose up -d` this container's topics are live
+    # with nothing left to run by hand. `bash -lc` so the ROS environment is
+    # sourced -- `command:` bypasses the entrypoint exactly as `exec` does.
+    #
+    # AUTOSTART=false drops to a bare shell instead. Use that when you want the
+    # CLIs, which cannot share the hardware with the agent. The $$ is Compose's
+    # escape for a literal $, so bash expands it inside the container -- without
+    # it Compose would substitute at parse time from the HOST environment and the
+    # variable below would do nothing.
+    command: ["bash", "-lc", "if [ \"$${AUTOSTART:-true}\" = true ]; then exec ./start.sh; else exec bash; fi"]
+
+    stdin_open: true
+    tty: true

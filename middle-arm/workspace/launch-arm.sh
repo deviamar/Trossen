@@ -16,6 +16,7 @@
 #   ./launch-arm.sh --rviz       # real hardware + RViz
 #   ./launch-arm.sh --sim        # DYNAMIXEL simulator, no hardware needed
 #   ./launch-arm.sh --limp       # real hardware, TORQUE OFF (read-only test)
+#   ./launch-arm.sh --dump-urdf  # print the URDF and exit (for head_agent.py)
 #   ./launch-arm.sh --sim --rviz
 #
 # On the real arm this holds station: position mode + torque_enable seeds each
@@ -44,15 +45,37 @@ MODE_FILE="modes_nogripper.yaml"
 # startup and spares the EEPROM's finite write cycles.
 LOAD_CONFIGS="${LOAD_CONFIGS:-true}"
 
+# --dump-urdf writes this arm's URDF to stdout and exits, launching nothing.
+# head_agent.py needs a URDF to build its pyroki model, and the only URDF that
+# is definitely right is the one generated from the same xacro and the same
+# arguments the driver uses -- writing one by hand is how the solver ends up
+# describing a slightly different robot than the one on the bench.
+DUMP_URDF=false
+
 for arg in "$@"; do
   case "$arg" in
     --sim)   USE_SIM=true  ;;
     --rviz)  USE_RVIZ=true ;;
     --limp)  MODE_FILE="modes_nogripper_limp.yaml" ;;
+    --dump-urdf) DUMP_URDF=true ;;
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
+
+if [ "${DUMP_URDF}" = true ]; then
+  # Same arguments as the launch below, so the model matches the running arm.
+  # Note this does NOT include the ZED: the vendor xacro has no camera on the
+  # wrist (see README), so the URDF ends at the flange.
+  exec xacro \
+    "$(ros2 pkg prefix interbotix_xsarm_descriptions)/share/interbotix_xsarm_descriptions/urdf/${ROBOT_MODEL}.urdf.xacro" \
+    robot_name:="${ROBOT_NAME}" \
+    base_link_frame:=base_link \
+    show_ar_tag:=false \
+    show_gripper_bar:=false \
+    show_gripper_fingers:=false \
+    use_world_frame:=false
+fi
 
 if [ "${USE_SIM}" = "false" ] && [ ! -e /dev/ttyDXL ]; then
   echo "ERROR: /dev/ttyDXL is missing -- the U2D2 is unplugged, the arm is" >&2

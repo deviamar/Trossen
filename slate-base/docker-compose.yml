@@ -1,0 +1,115 @@
+# =============================================================================
+# SLATE mobile base -- one service, one node.
+#
+# Same host-networking + ROS_DOMAIN_ID + RMW as ../manip-arm/ and ../middle-arm/,
+# so all four containers land in one DDS graph and `ros2 topic list` in any of
+# them sees the others.
+#
+# The base is reached over USB serial (CH340, VID:PID 1a86:7523). Nothing here
+# configures that: the host udev rule must already be installed and the base
+# powered and plugged in. See host-setup/ and README.md.
+# =============================================================================
+services:
+  slate-base:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+      args:
+        USER_UID: ${UID:-1000}
+        USER_GID: ${GID:-1000}
+        # Swap to ros-base for a ~2 GB smaller image if you never want RViz.
+        ROS_PKG: desktop
+    image: slate-base:latest
+    container_name: slate-base
+
+    network_mode: host
+
+    # Share the host IPC namespace, which means sharing /dev/shm.
+    #
+    # NOT optional, and the failure it prevents is genuinely misleading: Fast DDS
+    # discovers peers over UDP -- which works, because network_mode: host gives
+    # every container one network stack -- but then negotiates SHARED MEMORY for
+    # the actual data on the same host. Each container gets its own private 64 MB
+    # /dev/shm by default, so the segments never match. The result is `ros2 topic
+    # list` showing everything, `ros2 topic info --verbose` showing a healthy
+    # publisher, and not one message ever arriving.
+    #
+    # slate-base appeared to work without this only because it mounts /dev:/dev
+    # for the serial port, which drags the host's /dev/shm in by accident. Set
+    # explicitly here so it is a decision rather than a side effect.
+    ipc: host
+
+    # Same trade-off, and the same reasoning, as ../middle-arm/docker-compose.yml
+    # -- but the case for it is stronger here. The tighter form would be
+    # `devices: [/dev/ttySLATE]` plus `device_cgroup_rules: ["c 188:* rmw"]`
+    # (188 is ttyUSB; the CH340 enumerates there). Two reasons not to:
+    #
+    #   1. A `devices:` entry makes `up` fail outright whenever the base is
+    #      unplugged or powered down, which for a mobile base is most of the
+    #      time it is not actively being driven.
+    #   2. The driver does not open a path you give it -- it enumerates USB
+    #      serial devices with libudev and picks its own. A single device node
+    #      passed through is not enough for that scan to see anything; it needs
+    #      the /sys and /dev views below.
+    privileged: true
+
+    environment:
+      # Every topic and service the driver creates is relative, so this is what
+      # decides whether they land at /cmd_vel or /slate/cmd_vel. See launch-base.sh
+      # -- it is applied there via `--ros-args -r __ns:=`, because the node takes
+      # no namespace argument of its own.
+      #
+      # Namespacing is not cosmetic. A bare /cmd_vel on a shared DDS graph means
+      # ANY node on the domain that publishes the conventional topic name drives
+      # this base -- teleop_twist_keyboard, a nav stack someone left running, the
+      # stray teleop rig documented in ../middle-arm/docker-compose.yml. The
+      # arms fail safe when something unexpected talks to them; a mobile base
+      # drives into a wall.
+      # true: start this container's nodes automatically (see start.sh)
+      # false: bare shell, for the CLIs that need the hardware to themselves
+      - AUTOSTART=true
+      # true: run sim_base.py instead of the real driver -- no serial port, no
+      # hardware, odometry integrated from what you command. Everything above
+      # the driver is identical, so this is how you prove the velocity chain
+      # before it can move anything.
+      - SLATE_SIM=false
+      - SLATE_NS=/slate
+      # Matches the other two containers. Deliberately NOT 0 -- see the note in
+      # ../middle-arm/docker-compose.yml about the lab wifi. Must match or the
+      # containers stop discovering each other.
+      - ROS_DOMAIN_ID=42
+      # Pinned explicitly rather than left to the default: a DDS implementation
+      # mismatch between containers produces a silent no-discovery failure that
+      # presents as a network problem. Same value as the other two compose files.
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+
+    volumes:
+      - /dev:/dev
+      # The prebuilt chassis driver finds its own port with libudev
+      # (udev_enumerate_scan_devices + idVendor/idProduct match). That scan walks
+      # /sys, which Docker mounts read-only by default, so the match itself works
+      # without this line. /run/udev carries the udev runtime database that
+      # libudev consults for device properties, and mounting it read-only costs
+      # nothing and removes a whole class of "works on the host, finds nothing in
+      # the container" from the table.
+      - /run/udev:/run/udev:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./workspace:/home/robot/workspace
+
+
+    # Autostart: after `docker compose up -d` this container's topics are live
+    # with nothing left to run by hand. `bash -lc` so the ROS environment is
+    # sourced -- `command:` bypasses the entrypoint exactly as `exec` does.
+    #
+    # AUTOSTART=false drops to a bare shell instead. Use that when you want the
+    # CLIs, which cannot share the hardware with the agent. The $$ is Compose's
+    # escape for a literal $, so bash expands it inside the container -- without
+    # it Compose would substitute at parse time from the HOST environment and the
+    # variable below would do nothing.
+    command: ["bash", "-lc", "if [ \"$${AUTOSTART:-true}\" = true ]; then exec ./start.sh; else exec bash; fi"]
+
+    stdin_open: true
+    tty: true

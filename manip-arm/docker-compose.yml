@@ -37,6 +37,21 @@ x-arm-common: &arm-common
   # that binds a fixed port can only run in one container at a time.
   network_mode: host
 
+  # Share the host IPC namespace, which means sharing /dev/shm.
+  #
+  # NOT optional, and the failure it prevents is genuinely misleading: Fast DDS
+  # discovers peers over UDP -- which works, because network_mode: host gives
+  # every container one network stack -- but then negotiates SHARED MEMORY for
+  # the actual data on the same host. Each container gets its own private 64 MB
+  # /dev/shm by default, so the segments never match. The result is `ros2 topic
+  # list` showing everything, `ros2 topic info --verbose` showing a healthy
+  # publisher, and not one message ever arriving.
+  #
+  # slate-base appeared to work without this only because it mounts /dev:/dev
+  # for the serial port, which drags the host's /dev/shm in by accident. Set
+  # explicitly here so it is a decision rather than a side effect.
+  ipc: host
+
   volumes:
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
     - ./workspace:/home/robot/workspace
@@ -53,6 +68,16 @@ x-arm-common: &arm-common
   #           count: all
   #           capabilities: [gpu]
 
+
+  # Autostart: after `docker compose up -d` this container's topics are live
+  # with nothing left to run by hand. `bash -lc` so the ROS environment is
+  # sourced -- `command:` bypasses the entrypoint exactly as `exec` does.
+  #
+  # AUTOSTART=false drops to a bare shell instead. Use that when you want the
+  # CLIs, which cannot share the hardware with the agent. The $$ is Compose's
+  # escape for a literal $, so bash expands it inside the container.
+  command: ["bash", "-lc", "if [ \"$${AUTOSTART:-true}\" = true ]; then exec ./start.sh; else exec bash; fi"]
+
   stdin_open: true
   tty: true
 
@@ -61,7 +86,16 @@ x-arm-common: &arm-common
 # `environment:` list in a service would replace the shared one wholesale
 # rather than extending it.
 x-arm-env: &arm-env
+  # true: run arm_agent.py automatically -- which HOLDS THE ARM'S ONLY
+  # CONNECTION, so pose.py/read_joints.py/teach.py cannot run against it.
+  # false: bare shell, for those CLIs.
+  AUTOSTART: "true"
   ARM_MODEL: wxai_v0            # set to whatever your actual arm model string is
+  # End effector variant: base (bare flange), leader (trigger handle), or
+  # follower (gripper). Not cosmetic -- it feeds the gravity/friction
+  # compensation model, so a wrong value makes the arm sag or fight itself in
+  # the force-based modes that teach.py and gripper.py use.
+  ARM_EE: wxai_v0_base
   # Deliberately NOT 0 -- see the matching note in ../middle-arm/docker-compose.yml.
   # Zero is the ROS 2 default, so an unrelated teleop rig on the lab wifi lands in
   # the same graph. Must match that file or the arms stop discovering each other.
@@ -74,18 +108,26 @@ x-arm-env: &arm-env
   QT_X11_NO_MITSHM: "1"         # avoids a common Qt/RViz X11 shared-memory glitch in containers
 
 services:
-  arm-1:
+  left-arm:
     <<: *arm-common
-    container_name: trossen-arm-1
+    container_name: left-arm
     environment:
       <<: *arm-env
-      ARM_IP: "${ARM_1_IP:-192.168.1.2}"
+      ARM_IP: "${LEFT_ARM_IP:-192.168.1.2}"
+      # ARM_NAME namespaces this arm's entries in workspace/config/poses.yaml.
+      # ARM_NS is the ROS namespace arm_agent.py owns -- see docs/topic-contract.md.
+      # They are separate on purpose: renaming a pose file key should not silently
+      # re-target every teleop command in the rig.
+      ARM_NAME: left_arm
+      ARM_NS: /left_arm
 
-  arm-2:
+  right-arm:
     <<: *arm-common
-    container_name: trossen-arm-2
+    container_name: right-arm
     environment:
       <<: *arm-env
       # The re-addressed arm. Factory default is .2 for both, so this one has
       # had set_manual_ip("192.168.1.3") written to its controller.
-      ARM_IP: "${ARM_2_IP:-192.168.1.3}"
+      ARM_IP: "${RIGHT_ARM_IP:-192.168.1.3}"
+      ARM_NAME: right_arm
+      ARM_NS: /right_arm

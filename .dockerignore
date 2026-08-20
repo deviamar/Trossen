@@ -1,0 +1,15 @@
+# The middle-arm build context is the repo root (it needs third_party/pyroki),
+# so without this every build ships the whole repo -- .git included -- to the
+# daemon before the first instruction runs.
+.git
+**/.git
+third_party/pyroki/.git
+docs
+media
+**/__pycache__
+**/*.pyc
+**/config/poses.yaml
+quest/secrets
+slate-base/workspace/driver.log
+*.md
+!third_party/pyroki/README.md

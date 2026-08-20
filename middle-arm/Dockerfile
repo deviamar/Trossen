@@ -210,8 +210,8 @@ ENV ROS_WS=/home/${USERNAME}/workspace
 
 # Fixed, username-independent paths: an exec-form ENTRYPOINT performs no variable
 # substitution, so it cannot reference ${USERNAME}.
-COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY --chmod=644 ros-env.sh /usr/local/bin/ros-env.sh
+COPY --chmod=755 middle-arm/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=644 middle-arm/ros-env.sh /usr/local/bin/ros-env.sh
 
 USER ${USERNAME}
 RUN mkdir -p ${ROS_WS}/src
@@ -229,6 +229,28 @@ WORKDIR ${ROS_WS}
 # fails with "ros2: command not found" while the identical command typed inside
 # an interactive `bash` works fine. ros-env.sh guards itself against repeat
 # sourcing, which BASH_ENV would otherwise cause on every nested shell.
+# ---- pyroki: IK for the active-vision arm ------------------------------------
+# The WXAI manipulators solve their own Cartesian IK inside the controller. This
+# arm cannot -- xs_sdk speaks joint positions only -- so head_agent.py needs a
+# solver, and pyroki (JAX least-squares kinematics) is it. Same stack giava uses,
+# which is why middle_ik.py can follow its three_arm_ik.py structure closely.
+#
+# CPU jax on purpose. This is one 6-DoF arm at 50 Hz; the solve is microseconds
+# after tracing and the GPU wheels would add gigabytes plus a CUDA/driver version
+# match to every rebuild. Swap in jax[cuda12] here if profiling ever justifies it.
+#
+# Vendored as a submodule at third_party/pyroki and installed from the build
+# context, so a rebuild is reproducible against a pinned commit rather than
+# whatever PyPI holds that day.
+COPY --chown=${USER_UID}:${USER_GID} third_party/pyroki /opt/pyroki
+RUN pip3 install --no-cache-dir \
+    "jax[cpu]" \
+    jaxlie \
+    jaxls \
+    jax-dataclasses \
+    yourdfpy \
+    && pip3 install --no-cache-dir --no-deps /opt/pyroki
+
 ENV BASH_ENV=/usr/local/bin/ros-env.sh
 
 RUN echo "source /usr/local/bin/ros-env.sh" >> /home/${USERNAME}/.bashrc \

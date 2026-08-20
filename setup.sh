@@ -18,7 +18,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 uid="$(id -u)"
 gid="$(id -g)"
 
-for project in manip-arm middle-arm; do
+# Discovered, not listed. A hardcoded list goes stale silently every time a
+# project is added or removed, and the failure it produces is genuinely nasty:
+# a project with no .env builds with UID 1000 instead of yours, and then Fast
+# DDS cannot move data between that container and the others -- its shared
+# memory segments are 0644 and a DDS writer has to WRITE into the reader's
+# segment. Discovery still works, so you get a full `ros2 topic list` and not
+# one message. Ask the filesystem instead.
+for project in $(find . -maxdepth 2 -name docker-compose.yml -printf '%h\n' \
+                | sed 's|^\./||' | grep -v '^\.$' | sort); do
   [ -d "$project" ] || continue
   printf 'UID=%s\nGID=%s\n' "$uid" "$gid" > "$project/.env"
   echo "wrote $project/.env  (UID=$uid GID=$gid)"
@@ -26,11 +34,14 @@ done
 
 echo
 echo "Next:"
-echo "  middle arm (wx250s + camera):"
-echo "    ./middle-arm/host-setup/setup-host.sh    # udev rules; NVIDIA toolkit if using ZED"
-echo "    cd middle-arm && docker compose build && docker compose up -d"
+echo "  everything at once:"
+echo "    docker compose build && docker compose up -d      # from this directory"
 echo
-echo "  manipulator arms (wxai_v0 over Ethernet):"
-echo "    cd manip-arm && docker compose build && docker compose up -d"
+echo "  the two host steps that cannot live in an image:"
+echo "    ./middle-arm/host-setup/setup-host.sh     # udev for the U2D2"
+echo "    ./slate-base/host-setup/setup-host.sh     # udev for the base; removes brltty"
 echo
-echo "See README.md for what does and does not transfer between machines."
+echo "  per-project builds still work on their own:"
+echo "    cd slate-base && docker compose up -d"
+echo
+echo "See README.md, and docs/topic-contract.md for how the containers talk."

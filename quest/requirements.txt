@@ -1,0 +1,13 @@
+# Python deps for the quest container.
+#
+# All of these exist for the vendored giava code in workspace/giava/ -- the
+# udp and sim backends still need nothing beyond the standard library, which is
+# why backends/ imports lazily and `--backend sim` works even if this install
+# failed.
+aiortc                   # WebRTC peer connection + data channel
+av                       # video frames for the stereo tracks (pulled in by aiortc)
+opencv-python-headless   # webrtc_headset imports cv2; headless avoids the GUI stack
+google-cloud-firestore   # signalling: the offer/answer rendezvous
+numpy
+scipy                    # rotations in transform_utils / teleop_map
+numba                    # @jit on the coordinate conversions

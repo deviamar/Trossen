@@ -1,0 +1,49 @@
+# =============================================================================
+# Rig monitor. Watches everything, commands almost nothing.
+#
+# No devices, no privileges, no vendor SDK -- a pure ROS client. That is what
+# makes it useful when something is wrong: there is very little in here that
+# could itself be the problem.
+#
+# Deliberately NOT autostarted. Its two tools are things you run and watch, not
+# services, and a monitor that prints to a log nobody reads is not a monitor.
+#   docker compose exec monitor ./watch.py
+#   docker compose exec monitor ./drive_test.py --execute
+# =============================================================================
+services:
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+      args:
+        USER_UID: ${UID:-1000}
+        USER_GID: ${GID:-1000}
+    image: rig-monitor:latest
+    container_name: monitor
+    network_mode: host
+
+    # Share the host IPC namespace, which means sharing /dev/shm.
+    #
+    # NOT optional, and the failure it prevents is genuinely misleading: Fast DDS
+    # discovers peers over UDP -- which works, because network_mode: host gives
+    # every container one network stack -- but then negotiates SHARED MEMORY for
+    # the actual data on the same host. Each container gets its own private 64 MB
+    # /dev/shm by default, so the segments never match. The result is `ros2 topic
+    # list` showing everything, `ros2 topic info --verbose` showing a healthy
+    # publisher, and not one message ever arriving.
+    #
+    # slate-base appeared to work without this only because it mounts /dev:/dev
+    # for the serial port, which drags the host's /dev/shm in by accident. Set
+    # explicitly here so it is a decision rather than a side effect.
+    ipc: host
+
+    environment:
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+    volumes:
+      - ./workspace:/home/robot/workspace
+
+    stdin_open: true
+    tty: true

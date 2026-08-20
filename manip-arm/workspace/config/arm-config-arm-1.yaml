@@ -1,0 +1,859 @@
+factory_reset_flag: false
+ip_method: dhcp
+manual_ip: 192.168.1.2
+dns: 8.8.8.8
+gateway: 192.168.1.1
+subnet: 255.255.255.0
+joint_characteristics:
+  - effort_correction: 1.6312955617904663
+    friction_transition_velocity: 0
+    friction_constant_term: -0.1599999964237213
+    friction_coulomb_coef: 0.27267372608184814
+    friction_viscous_coef: 0.2974647581577301
+    position_offset: 0
+  - effort_correction: 1.2972534894943237
+    friction_transition_velocity: 0
+    friction_constant_term: -0.10999999940395355
+    friction_coulomb_coef: 0.14831580221652985
+    friction_viscous_coef: -0.13734644651412964
+    position_offset: 0
+  - effort_correction: 1.3032517433166504
+    friction_transition_velocity: 0
+    friction_constant_term: -0.029999999329447746
+    friction_coulomb_coef: 0.1548779159784317
+    friction_viscous_coef: -0.12302615493535995
+    position_offset: 0
+  - effort_correction: 1.282301664352417
+    friction_transition_velocity: 0
+    friction_constant_term: -0.009999999776482582
+    friction_coulomb_coef: 0.012457462027668953
+    friction_viscous_coef: 0.013106136582791805
+    position_offset: 0
+  - effort_correction: 1.31760835647583
+    friction_transition_velocity: 0
+    friction_constant_term: 0.029999999329447746
+    friction_coulomb_coef: -0.013736071065068245
+    friction_viscous_coef: 0.019468937069177628
+    position_offset: 0
+  - effort_correction: 1.2000000476837158
+    friction_transition_velocity: 0
+    friction_constant_term: -0.019999999552965164
+    friction_coulomb_coef: 0
+    friction_viscous_coef: 0.018656058236956596
+    position_offset: 0
+  - effort_correction: 1.2000000476837158
+    friction_transition_velocity: 0
+    friction_constant_term: 8.199999809265137
+    friction_coulomb_coef: 0
+    friction_viscous_coef: 0
+    position_offset: 0
+modes:
+  - idle
+  - idle
+  - idle
+  - idle
+  - idle
+  - idle
+  - idle
+end_effector:
+  palm:
+    mass: 0.5598414540290833
+    inertia:
+      - 0.0008366000256501138
+      - -7.300000106624793e-07
+      - 3.580000111469417e-06
+      - -7.300000106624793e-07
+      - 0.000380940007744357
+      - -1.700000069604357e-07
+      - 3.580000111469417e-06
+      - -1.700000069604357e-07
+      - 0.0009712100145407021
+    origin_xyz:
+      - 0.04530753940343857
+      - -4.230999911669642e-05
+      - 0.00021127999934833497
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  finger_left:
+    mass: 0.07283511012792587
+    inertia:
+      - 2.513999970688019e-05
+      - 4.86999988424941e-06
+      - -2.530000074330019e-06
+      - 4.86999988424941e-06
+      - 3.632999869296327e-05
+      - -1.4400000054592965e-06
+      - -2.530000074330019e-06
+      - -1.4400000054592965e-06
+      - 4.148000152781606e-05
+    origin_xyz:
+      - 0.003004679922014475
+      - -0.006998749915510416
+      - -0.0038340298924595118
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  finger_right:
+    mass: 0.0728352963924408
+    inertia:
+      - 2.5780000214581378e-05
+      - -4.86999988424941e-06
+      - 4.9599998419580515e-06
+      - -4.86999988424941e-06
+      - 3.696999920066446e-05
+      - -5.499999815583578e-07
+      - 4.9599998419580515e-06
+      - -5.499999815583578e-07
+      - 4.148000152781606e-05
+    origin_xyz:
+      - 0.003004699945449829
+      - 0.006998640019446611
+      - 0.002443620003759861
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  offset_finger_left: 0.02449817955493927
+  offset_finger_right: -0.024501819163560867
+  pitch_circle_radius: 0.008750000037252903
+  t_flange_tool:
+    - 0.156062
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+joint_limits:
+  - position_min: -3.1415927410125732
+    position_max: 3.1415927410125732
+    position_tolerance: 0.20000000298023224
+    velocity_max: 6.2831854820251465
+    velocity_tolerance: 0
+    effort_max: 27
+    effort_tolerance: 5.400000095367432
+  - position_min: 0
+    position_max: 3.1415927410125732
+    position_tolerance: 0.20000000298023224
+    velocity_max: 6.2831854820251465
+    velocity_tolerance: 0
+    effort_max: 27
+    effort_tolerance: 5.400000095367432
+  - position_min: 0
+    position_max: 2.356194496154785
+    position_tolerance: 0.20000000298023224
+    velocity_max: 6.2831854820251465
+    velocity_tolerance: 0
+    effort_max: 27
+    effort_tolerance: 5.400000095367432
+  - position_min: -1.5707963705062866
+    position_max: 1.5707963705062866
+    position_tolerance: 0.4000000059604645
+    velocity_max: 9.42477798461914
+    velocity_tolerance: 0
+    effort_max: 7
+    effort_tolerance: 1.399999976158142
+  - position_min: -1.5707963705062866
+    position_max: 1.5707963705062866
+    position_tolerance: 0.4000000059604645
+    velocity_max: 9.42477798461914
+    velocity_tolerance: 0
+    effort_max: 7
+    effort_tolerance: 1.399999976158142
+  - position_min: -3.1415927410125732
+    position_max: 3.1415927410125732
+    position_tolerance: 0.4000000059604645
+    velocity_max: 9.42477798461914
+    velocity_tolerance: 0
+    effort_max: 7
+    effort_tolerance: 1.399999976158142
+  - position_min: 0
+    position_max: 0.03999999910593033
+    position_tolerance: 0.004000000189989805
+    velocity_max: 0.25
+    velocity_tolerance: 0
+    effort_max: 100
+    effort_tolerance: 300
+motor_parameters:
+  - idle:
+      position:
+        kp: 0
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0.03999999910593033
+        kd: 0
+        imax: 9
+    position:
+      position:
+        kp: 16
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+    velocity:
+      position:
+        kp: 120
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+    external_effort:
+      position:
+        kp: 120
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+    effort:
+      position:
+        kp: 120
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+  - idle:
+      position:
+        kp: 0
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0.03999999910593033
+        kd: 0
+        imax: 27
+    position:
+      position:
+        kp: 16
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+    velocity:
+      position:
+        kp: 120
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+    external_effort:
+      position:
+        kp: 120
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+    effort:
+      position:
+        kp: 120
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+  - idle:
+      position:
+        kp: 0
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0.03999999910593033
+        kd: 0
+        imax: 9
+    position:
+      position:
+        kp: 16
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+    velocity:
+      position:
+        kp: 120
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+    external_effort:
+      position:
+        kp: 120
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+    effort:
+      position:
+        kp: 120
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 8
+        ki: 0
+        kd: 0
+        imax: 0
+  - idle:
+      position:
+        kp: 0
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0.009999999776482582
+        kd: 0
+        imax: 3
+    position:
+      position:
+        kp: 80
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    velocity:
+      position:
+        kp: 80
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    external_effort:
+      position:
+        kp: 80
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    effort:
+      position:
+        kp: 80
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+  - idle:
+      position:
+        kp: 0
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0.009999999776482582
+        kd: 0
+        imax: 3
+    position:
+      position:
+        kp: 40
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    velocity:
+      position:
+        kp: 40
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    external_effort:
+      position:
+        kp: 40
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    effort:
+      position:
+        kp: 40
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+  - idle:
+      position:
+        kp: 0
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0.009999999776482582
+        kd: 0
+        imax: 3
+    position:
+      position:
+        kp: 40
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    velocity:
+      position:
+        kp: 40
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    external_effort:
+      position:
+        kp: 40
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    effort:
+      position:
+        kp: 40
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+  - idle:
+      position:
+        kp: 0
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 0.05000000074505806
+        ki: 0.0005000000237487257
+        kd: 0
+        imax: 3
+    position:
+      position:
+        kp: 20
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    velocity:
+      position:
+        kp: 20
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    external_effort:
+      position:
+        kp: 20
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+    effort:
+      position:
+        kp: 20
+        ki: 0
+        kd: 0
+        imax: 0
+      velocity:
+        kp: 1
+        ki: 0
+        kd: 0
+        imax: 0
+links:
+  - mass: 0.44999998807907104
+    inertia:
+      - 0.00040781000279821455
+      - 1.1000000199601345e-07
+      - -4.439999884198187e-06
+      - 1.1000000199601345e-07
+      - 0.0004394899879116565
+      - -7.599999776175537e-07
+      - -4.439999884198187e-06
+      - -7.599999776175537e-07
+      - 0.00020951000624336302
+    origin_xyz:
+      - -0.0001417500025127083
+      - -5.228000009083189e-05
+      - 0.03175177052617073
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - mass: 0.1492999941110611
+    inertia:
+      - 0.00018096000712830573
+      - -1.8700000055105193e-06
+      - -1.4039999769011047e-05
+      - -1.8700000055105193e-06
+      - 8.17199979792349e-05
+      - -1.269999984288006e-06
+      - -1.4039999769011047e-05
+      - -1.269999984288006e-06
+      - 0.00018791000184137374
+    origin_xyz:
+      - -0.00011074999929405749
+      - 0.0017117599491029978
+      - 0.020445920526981354
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - mass: 1.1856000423431396
+    inertia:
+      - 0.001055189990438521
+      - -3.2800001008581603e-06
+      - -2.7539999791770242e-05
+      - -3.2800001008581603e-06
+      - 0.017849519848823547
+      - -1.9799999790848233e-06
+      - -2.7539999791770242e-05
+      - -1.9799999790848233e-06
+      - 0.018449649214744568
+    origin_xyz:
+      - -0.13121451437473297
+      - -0.0029258299618959427
+      - 0.00021344999549910426
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - mass: 0.692799985408783
+    inertia:
+      - 0.0006545599899254739
+      - 9.210000280290842e-05
+      - -0.0005246700020506978
+      - 9.210000280290842e-05
+      - 0.005522970110177994
+      - 1.1690000064845663e-05
+      - -0.0005246700020506978
+      - 1.1690000064845663e-05
+      - 0.00566525012254715
+    origin_xyz:
+      - 0.180836021900177
+      - -0.0009409000049345195
+      - 0.055549368262290955
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - mass: 0.47699999809265137
+    inertia:
+      - 0.0005608500214293599
+      - 7.189999905676814e-06
+      - -0.00018921999435406178
+      - 7.189999905676814e-06
+      - 0.0006889699725434184
+      - 7.539999842265388e-06
+      - -0.00018921999435406178
+      - 7.539999842265388e-06
+      - 0.0004387299995869398
+    origin_xyz:
+      - 0.057978421449661255
+      - 0.0002714500005822629
+      - 0.058844469487667084
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - mass: 0.36399999260902405
+    inertia:
+      - 0.00018760999955702573
+      - -4.4999998749517545e-07
+      - 8.900000239009387e-07
+      - -4.4999998749517545e-07
+      - 0.00031805000617168844
+      - 2.999999892949745e-08
+      - 8.900000239009387e-07
+      - 2.999999892949745e-08
+      - 0.0002653599949553609
+    origin_xyz:
+      - 0.004124470055103302
+      - -1.1379999705241062e-05
+      - -0.042831841856241226
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - mass: 0.583899974822998
+    inertia:
+      - 0.0008676900179125369
+      - -5.399999736255268e-07
+      - 1.1000000199601345e-07
+      - -5.399999736255268e-07
+      - 0.0005132600199431181
+      - 3.999999975690116e-08
+      - 1.1000000199601345e-07
+      - 3.999999975690116e-08
+      - 0.0011431799503043294
+    origin_xyz:
+      - 0.0457276813685894
+      - -7.260000074893469e-06
+      - 1.401999998051906e-05
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - mass: 0.059450000524520874
+    inertia:
+      - 1.8750000890577212e-05
+      - 3.0900000638212077e-06
+      - -1.4900000451234519e-06
+      - 3.0900000638212077e-06
+      - 2.6140000045415945e-05
+      - -1.2399999604895129e-06
+      - -1.4900000451234519e-06
+      - -1.2399999604895129e-06
+      - 2.995000068040099e-05
+    origin_xyz:
+      - 0.0016901600174605846
+      - -0.00592795992270112
+      - -0.003657009918242693
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - mass: 0.059450000524520874
+    inertia:
+      - 1.9299999621580355e-05
+      - -3.0900000638212077e-06
+      - 3.5900000057154102e-06
+      - -3.0900000638212077e-06
+      - 2.6699999580159783e-05
+      - -6.399999961104186e-07
+      - 3.5900000057154102e-06
+      - -6.399999961104186e-07
+      - 2.995000068040099e-05
+    origin_xyz:
+      - 0.0016901500057429075
+      - 0.005927930120378733
+      - 0.002018179977312684
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+joints:
+  - axis:
+      - 0
+      - 0
+      - 1
+      - 0
+      - 0
+      - 0
+    origin_xyz:
+      - 0
+      - 0
+      - 0.0572500005364418
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - axis:
+      - 0
+      - 1
+      - 0
+      - 0
+      - 0
+      - 0
+    origin_xyz:
+      - 0.019999999552965164
+      - 0
+      - 0.04625000059604645
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - axis:
+      - 0
+      - -1
+      - 0
+      - 0
+      - 0
+      - 0
+    origin_xyz:
+      - -0.2639999985694885
+      - 0
+      - 0
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - axis:
+      - 0
+      - -1
+      - 0
+      - 0
+      - 0
+      - 0
+    origin_xyz:
+      - 0.24500000476837158
+      - 0
+      - 0.05999999865889549
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - axis:
+      - 0
+      - 0
+      - -1
+      - 0
+      - 0
+      - 0
+    origin_xyz:
+      - 0.0677499994635582
+      - 0
+      - 0.045499999076128006
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - axis:
+      - 1
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+    origin_xyz:
+      - 0.028950000181794167
+      - 0
+      - -0.045499999076128006
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - axis:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 1
+      - 0
+    origin_xyz:
+      - 0.07800000160932541
+      - 0.01484999991953373
+      - 0
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+  - axis:
+      - 0
+      - 0
+      - 0
+      - 0
+      - -1
+      - 0
+    origin_xyz:
+      - 0.07800000160932541
+      - -0.01484999991953373
+      - 0
+    origin_rpy:
+      - 0
+      - 0
+      - 0
+algorithm_parameter:
+  singularity_threshold: 0.01

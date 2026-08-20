@@ -1,0 +1,40 @@
+# Named poses for the WXAI manipulators:
+#   [joint_0 .. joint_5 in rad, gripper opening in m]
+# The gripper value is recorded but only commanded by 'go --with-gripper'.
+# Keyed by ARM_NAME -- this file is mounted into BOTH containers,
+# and the same name means a different point in space per arm.
+# Written by pose.py -- 'pose.py save <name>' captures the live pose.
+arm-1:
+  home:
+  - -0.0257
+  - -0.0002
+  - -1.5532
+  - 0.0132
+  - 0.0395
+  - 0.1131
+  - -0.0017
+  rest:
+  - -0.0349
+  - 0.0093
+  - -1.5448
+  - 0.0139
+  - -0.0349
+  - 0.0418
+  - -0.0016
+arm-2:
+  forward:
+  - -0.0246
+  - 0.4187
+  - -2.9734
+  - -1.3167
+  - 0.0181
+  - -0.0154
+  - -0.0013
+  home:
+  - -0.0273
+  - 0.0013
+  - -1.5455
+  - 0.0078
+  - 0.0216
+  - -0.0154
+  - -0.0013

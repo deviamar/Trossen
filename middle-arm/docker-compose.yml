@@ -19,8 +19,13 @@
 services:
   middle-arm:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # Repo root, not this directory: the build needs third_party/pyroki, and
+      # a build context cannot reach outside itself. Every COPY in the
+      # Dockerfile is therefore written relative to the root -- note the
+      # middle-arm/ prefixes. Nothing else about running this project changes;
+      # `cd middle-arm && docker compose up -d` still works.
+      context: ..
+      dockerfile: middle-arm/Dockerfile
       network: host
       args:
         USER_UID: ${UID:-1000}
@@ -37,6 +42,21 @@ services:
     # containers share one DDS graph and `ros2 topic list` sees every arm.
     network_mode: host
 
+    # Share the host IPC namespace, which means sharing /dev/shm.
+    #
+    # NOT optional, and the failure it prevents is genuinely misleading: Fast DDS
+    # discovers peers over UDP -- which works, because network_mode: host gives
+    # every container one network stack -- but then negotiates SHARED MEMORY for
+    # the actual data on the same host. Each container gets its own private 64 MB
+    # /dev/shm by default, so the segments never match. The result is `ros2 topic
+    # list` showing everything, `ros2 topic info --verbose` showing a healthy
+    # publisher, and not one message ever arriving.
+    #
+    # slate-base appeared to work without this only because it mounts /dev:/dev
+    # for the serial port, which drags the host's /dev/shm in by accident. Set
+    # explicitly here so it is a decision rather than a side effect.
+    ipc: host
+
     # For the arm alone this is heavier than strictly necessary -- the tighter
     # form is `devices: [/dev/ttyDXL]` plus `device_cgroup_rules: ["c 188:* rmw"]`
     # (188 is ttyUSB; the U2D2 is an FTDI part, so it enumerates there, not 189).
@@ -48,6 +68,9 @@ services:
     privileged: true
 
     environment:
+      # true: start this container's nodes automatically (see start.sh)
+      # false: bare shell, for the CLIs that need the hardware to themselves
+      - AUTOSTART=true
       - ROBOT_MODEL=wx250s
       - ROBOT_NAME=middle           # ROS namespace; matches AV-ALOHA's "middle" arm
       - DXL_PORT=/dev/ttyDXL        # created by the host udev rule, see host-setup/
@@ -69,6 +92,18 @@ services:
       - /dev:/dev
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./workspace:/home/robot/workspace
+
+
+    # Autostart: after `docker compose up -d` this container's topics are live
+    # with nothing left to run by hand. `bash -lc` so the ROS environment is
+    # sourced -- `command:` bypasses the entrypoint exactly as `exec` does.
+    #
+    # AUTOSTART=false drops to a bare shell instead. Use that when you want the
+    # CLIs, which cannot share the hardware with the agent. The $$ is Compose's
+    # escape for a literal $, so bash expands it inside the container -- without
+    # it Compose would substitute at parse time from the HOST environment and the
+    # variable below would do nothing.
+    command: ["bash", "-lc", "if [ \"$${AUTOSTART:-true}\" = true ]; then exec ./start.sh; else exec bash; fi"]
 
     stdin_open: true
     tty: true

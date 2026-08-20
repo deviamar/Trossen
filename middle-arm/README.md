@@ -254,24 +254,25 @@ surface, and it is the reason separate containers cost you nothing architectural
 
 ```
         ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-        │  trossen-arm-1   │  │   middle-arm     │  │  slate-base      │
-        │  wxai_v0 ×2      │  │  wx250s + ZED    │  │  (not built yet) │
+        │  trossen-arm-1   │  │   middle-arm     │  │   slate-base     │
+        │  wxai_v0 ×2      │  │  wx250s + ZED    │  │  SLATE AGV       │
         │  Ethernet        │  │  USB + GPU       │  │  USB serial      │
         └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘
                  └─────────────────────┼─────────────────────┘
-                       host network · ROS_DOMAIN_ID=0 · DDS
+                       host network · ROS_DOMAIN_ID=42 · DDS
 ```
 
-**One thing to change in `../manip-arm/docker-compose.yml`:** add
-`RMW_IMPLEMENTATION=rmw_fastrtps_cpp` to its `environment` block. It is currently unset
-there and set here. Today both default to the same middleware so it happens to work, but
-an RMW mismatch produces a silent no-discovery failure that presents as a network problem
-and is genuinely unpleasant to debug. Pinning it in both costs one line.
+`RMW_IMPLEMENTATION=rmw_fastrtps_cpp` is now pinned in all three compose files.
+It used to be set only here, which happened to work because both defaulted to the
+same middleware — but an RMW mismatch produces a silent no-discovery failure that
+presents as a network problem and is genuinely unpleasant to debug.
 
-The SLATE base is the remaining piece. Its ROS 2 packages ship inside
-`interbotix_ros_core` (which this image already clones) under
-`interbotix_ros_slate/trossen_slate`, currently `COLCON_IGNORE`d. It can be its own
-container on the same pattern, or folded into this one.
+The SLATE base is now its own container: [`../slate-base/`](../slate-base/). It
+builds from the same `interbotix_ros_core` repo this image clones, but from a
+different subtree — `interbotix_ros_slate/`, whose `COLCON_IGNORE` that image
+removes and this one deliberately leaves in place. The two do not overlap: this
+image builds the X-Series arm stack and ignores the SLATE packages; that one
+does the reverse.
 
 ## Notes and caveats
 

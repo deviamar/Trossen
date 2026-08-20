@@ -1,0 +1,69 @@
+# SLATE mobile base udev rules -- install on the HOST, not in the container.
+#
+# Docker cannot create these: udev runs in the host kernel's device manager, and
+# a container only ever sees the device nodes the host already made. This is the
+# one part of the setup that is per-machine rather than baked into the image.
+#
+#   sudo cp 99-trossen-slate.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger && sudo udevadm settle
+#
+# Verify with the base plugged in and powered:  ls -l /dev/ttySLATE
+#
+# The base's USB-serial bridge is a CH340 (QinHeng Electronics), VID:PID
+# 1a86:7523. That is a different chip from the U2D2's FTDI 0403:6014 in
+# ../../middle-arm/host-setup/, so the two rules cannot collide and both may be
+# installed on the same host.
+
+# ---------------------------------------------------------------------------
+# WHAT THE SYMLINK IS AND IS NOT FOR
+#
+# /dev/ttySLATE is for YOU, not for the driver. interbotix_slate_driver does not
+# accept a port: base_driver::chassisInit() takes an output string, enumerates
+# USB serial devices with libudev, matches idVendor/idProduct itself, and then
+# reports which node it opened. There is no port parameter to point at this
+# symlink and no equivalent of ../../middle-arm's DXL_PORT.
+#
+# It earns its place anyway, because "is the base actually connected?" is the
+# first question every time the driver fails to start, and `ls -l /dev/ttySLATE`
+# answers it without grepping lsusb. launch-base.sh checks for it before
+# starting the node, so the failure is one clear line instead of a fatal deep in
+# the driver.
+#
+# The corollary: with two CH340 devices attached, this symlink races to whichever
+# enumerated last AND the driver picks whichever its scan hits first -- and those
+# need not be the same device. Key on the adapter's serial if that ever happens,
+# the same way ../../middle-arm/host-setup/99-interbotix-udev.rules documents for
+# multiple U2D2s. Note that many CH340s ship with no serial descriptor at all, in
+# which case the honest fix is keying on the physical USB port path (KERNELS==)
+# rather than the device.
+# ---------------------------------------------------------------------------
+
+# MODE 0666 rather than GROUP="dialout": it matches what the Interbotix rules
+# already do for ttyUSB on this host, and it means the container works whether or
+# not the user inside it happens to be in dialout.
+#
+# ID_MM_DEVICE_IGNORE keeps ModemManager's hands off. Without it, ModemManager
+# probes any new ttyUSB looking for a cellular modem, holding the port open and
+# writing AT commands into it for the first several seconds after plug-in. The
+# symptom is a driver that fails to initialize if started too quickly after
+# connecting the base, then works on a retry -- which reads like a flaky cable.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE:="0666", ENV{ID_MM_DEVICE_IGNORE}="1", SYMLINK+="ttySLATE"
+
+# ---------------------------------------------------------------------------
+# brltty
+#
+# The single most common reason a CH340 device does not appear on Ubuntu.
+# brltty (braille display support, installed by default on Ubuntu desktop)
+# ships /usr/lib/udev/rules.d/85-brltty.rules, which claims 1a86:7523 as a
+# "BrlAPI" device and takes the port away moments after it enumerates. The
+# symptom is exact and confusing: /dev/ttyUSB0 appears, then vanishes a second
+# later, and `journalctl -u brltty` shows it binding.
+#
+# Trossen's own instructions say to remove the package outright:
+#
+#   sudo apt-get remove brltty
+#
+# setup-host.sh does that (with a prompt) rather than trying to out-rule it --
+# rule precedence against a vendor-shipped file in /usr/lib is fragile, and
+# nothing on this rig uses a braille display.
+# ---------------------------------------------------------------------------

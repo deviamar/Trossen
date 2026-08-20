@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//dev/**)",
+      "Bash(lsusb)",
+      "Read(//etc/udev/rules.d/**)",
+      "Bash(nvidia-smi -L)",
+      "Bash(ip -br addr)"
+    ]
+  }
+}

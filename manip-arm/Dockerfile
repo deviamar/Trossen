@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     build-essential \
     sudo \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Non-root user matching host UID/GID (avoids bind-mount permission issues) ----
@@ -82,8 +83,34 @@ USER ${USERNAME}
 RUN mkdir -p ${ROS_WS}
 WORKDIR ${ROS_WS}
 
+# ---- RViz preview: trossen_arm_description, and ONLY that package -----------
+# The URDF/meshes for the wxai, so a pose can be looked at before it is sent.
+# Deliberately not the whole trossen_arm_ros workspace: `trossen_arm_bringup`
+# drags in ros2_control plus a hardware interface that opens the same single
+# connection to the controller as the scripts in ./workspace, so having it
+# built here would invite running both and having neither work. Description is
+# inert -- URDF, meshes, robot_state_publisher -- and touches no hardware.
+#
+# No vcs/rosdep step for the same reason: this package's exec deps
+# (robot_state_publisher, rviz2, xacro, joint_state_publisher_gui) are all in
+# ros-humble-desktop, already installed above.
+#
+# Separate workspace from ROS_WS on purpose: ROS_WS (/home/robot/workspace) is
+# bind-mounted from the host, so anything built into it at image-build time is
+# shadowed the moment a container starts.
+ARG DESC_REF=humble
+ENV DESC_WS=/home/${USERNAME}/ros2_ws
+RUN mkdir -p ${DESC_WS}/src \
+    && git clone -b ${DESC_REF} --depth 1 \
+       https://github.com/TrossenRobotics/trossen_arm_description.git \
+       ${DESC_WS}/src/trossen_arm_description \
+    && bash -c "source /opt/ros/humble/setup.bash \
+                && cd ${DESC_WS} \
+                && colcon build --symlink-install"
+
 # Source ROS 2 on shell start, and seed the rosdep cache as this user.
 RUN echo "source /opt/ros/humble/setup.bash" >> /home/${USERNAME}/.bashrc \
+    && echo "source ${DESC_WS}/install/setup.bash" >> /home/${USERNAME}/.bashrc \
     && rosdep update
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

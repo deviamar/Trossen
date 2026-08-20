@@ -1,0 +1,63 @@
+# =============================================================================
+# The whole rig, one file.
+#
+#   docker compose up -d              # every container, every node, every topic
+#   docker compose ps                 # what is running
+#   docker compose up -d --build      # after a Dockerfile change
+#   docker compose restart <service>  # after editing a script in workspace/
+#   docker compose down               # all of it
+#
+# `include:` rather than one flat file of service definitions. Each project keeps
+# its own docker-compose.yml and stays independently usable -- `cd slate-base &&
+# docker compose up -d` still works and still means the same thing. This file
+# composes them; it does not replace them. Editing a service happens in its own
+# project, where its Dockerfile and workspace already live.
+#
+# Requires Compose v2.20+ for `include`. Check with `docker compose version`.
+#
+# EVERY TOPIC IS LIVE AFTER `up -d`. Each container's `command:` runs its own
+# start.sh, which brings up that subsystem's driver and agents and waits. There
+# is nothing to launch by hand -- `exec` is for getting a shell or an
+# interactive tool, not for starting the rig. Set AUTOSTART=false on a service
+# for a bare shell instead; the manipulator CLIs need that, because arm_agent.py
+# holds the arm's only connection.
+#
+# WHAT "MODULAR" MEANS HERE, since starting them together could suggest
+# otherwise: these containers share a DDS graph and nothing else. No shared
+# volume, no shared Python module, no custom message package, no service call
+# from one component into another. Every crossing is a ROS topic with a standard
+# message type -- docs/topic-contract.md for the semantics,
+# docs/topics-by-container.md for who owns what.
+#
+# The three settings that put them on one graph are repeated in every included
+# file rather than set here, because each has to keep working on its own:
+#   network_mode: host        one network stack, so DDS multicast finds everyone
+#   ROS_DOMAIN_ID=42          not 0, or an unrelated rig on the lab wifi joins
+#   RMW_IMPLEMENTATION        pinned; a mismatch is a silent no-discovery failure
+#
+# ORDER. Compose starts these in parallel and that is fine: every component
+# tolerates its peers being absent. Ordering that does matter is handled inside
+# each start.sh -- the base's governor waits for its driver, the middle arm's IK
+# agent waits for joint_states. There is no depends_on here because there is no
+# cross-container startup dependency.
+# =============================================================================
+
+# Explicit project name, so `docker compose ls` and `docker ps` stay legible and
+# this is the same project whichever directory you invoke it from.
+#
+# NOTE the services below use explicit `container_name:`, which is GLOBAL to the
+# Docker daemon rather than scoped to a Compose project. That is what lets you
+# type `docker compose exec slate-base ...` instead of `trossen-slate-base-1`.
+# The cost: this project and a per-directory one cannot both have their
+# containers up at once, and the second to start fails with
+#     Conflict. The container name "/slate-base" is already in use
+# Bring the other down first (`cd slate-base && docker compose down`), or remove
+# the stray container (`docker rm -f slate-base`). See "Day to day" in README.md.
+name: trossen
+
+include:
+  - path: manip-arm/docker-compose.yml       # left-arm + right-arm
+  - path: middle-arm/docker-compose.yml      # active vision + ZED
+  - path: slate-base/docker-compose.yml      # AGV: drive (x, y) + lift (z)
+  - path: quest/docker-compose.yml           # teleop source
+  - path: monitor/docker-compose.yml         # watch topics, smoke-test the base
