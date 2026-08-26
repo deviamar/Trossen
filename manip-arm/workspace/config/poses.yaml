@@ -4,7 +4,7 @@
 # Keyed by ARM_NAME -- this file is mounted into BOTH containers,
 # and the same name means a different point in space per arm.
 # Written by pose.py -- 'pose.py save <name>' captures the live pose.
-arm-1:
+left_arm:
   home:
   - -0.0257
   - -0.0002
@@ -21,7 +21,7 @@ arm-1:
   - -0.0349
   - 0.0418
   - -0.0016
-arm-2:
+right_arm:
   forward:
   - -0.0246
   - 0.4187

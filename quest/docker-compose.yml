@@ -42,7 +42,19 @@ services:
     environment:
       # true: start this container's nodes automatically (see start.sh)
       # false: bare shell, for the CLIs that need the hardware to themselves
-      - AUTOSTART=true
+      # false ON PURPOSE, unlike every other container.
+      #
+      # This one is a teleop SOURCE. Its node publishes to /left_arm/cmd_*,
+      # /right_arm/cmd_*, /middle/cmd_* and /slate/cmd_vel_teleop at 72 Hz --
+      # including a dead-man zero when nothing is pressed, and including on the
+      # `sim` backend where the input is a fake circle. The newest message on a
+      # command topic wins, so an autostarted quest silently overrides
+      # arm_key.py, arm_ctl.py and drive_test.py and makes them all look dead.
+      #
+      # The container still comes up with `make`, so it is there when you want
+      # it. Start teleop explicitly:
+      #     docker compose exec quest ./launch-quest.sh --backend webrtc
+      - AUTOSTART=false
       - QUEST_NS=/quest
       # Which namespace each hand drives. Changing these re-targets teleop
       # without touching a line of code -- point them at a second pair of arms,

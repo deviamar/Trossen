@@ -17,7 +17,8 @@ and values: `docker compose exec monitor ./watch.py`.
 | SUB | `<ns>/cmd_pose` | `geometry_msgs/PoseStamped` | streaming Cartesian, for teleop |
 | SUB | `<ns>/cmd_joints` | `sensor_msgs/JointState` | one absolute joint vector |
 | SUB | `<ns>/cmd_pose_name` | `std_msgs/String` | a saved pose, **by name** |
-| SUB | `<ns>/cmd_gripper` | `std_msgs/Float32` | opening, metres |
+| SUB | `<ns>/cmd_gripper` | `std_msgs/Float32` | opening in metres — **position control, for staging the fingers** |
+| SUB | `<ns>/cmd_grip_force` | `std_msgs/Float32` | squeeze in newtons, + opens − closes — **what you grasp with** |
 | SUB | `<ns>/enable` | `std_msgs/Bool` | nothing moves while false |
 | PUB | `<ns>/ee_pose` | `geometry_msgs/PoseStamped` | measured |
 | PUB | `<ns>/joint_states` | `sensor_msgs/JointState` | measured |
@@ -138,6 +139,41 @@ sources publishing the same command topics is a fight neither wins.
 | PUB | `/slate/cmd_vel_teleop` | `geometry_msgs/Twist` | `drive_test.py` |
 | PUB | `<arm>/cmd_pose_name`, `<arm>/cmd_joints`, `<arm>/cmd_gripper`, `<arm>/enable` | | `arm_ctl.py` |
 | SUB | `<arm>/ee_pose`, `<arm>/joint_states`, `<arm>/pose_names`, `<arm>/active` | | `arm_ctl.py` |
+| PUB | `<arm>/cmd_pose`, `<arm>/cmd_gripper`, `<arm>/enable` for **all three arms** | | `rig_key.py` |
+| PUB | `/slate/cmd_vel_teleop`, `/slate/lift/cmd_velocity` | `Twist`, `Float32` | `rig_key.py` |
+| SRV | `/slate/set_motor_torque_status` | `std_srvs/SetBool` | `rig_key.py` |
+| SUB | `<arm>/ee_pose` for all three arms | `geometry_msgs/PoseStamped` | `rig_key.py` |
+
+`rig_key.py` is the single keyboard controller: it is the only client that
+touches every component at once, which is why it is the longest row here.
 
 `watch.py` subscribes with best-effort depth-1 QoS so it can never slow a
 publisher down or hold a queue on its behalf.
+
+## `sim` — the rig drawn in a browser
+
+Subscribes to everything below and **publishes nothing at all**. There is no
+command topic in this container and no code path that could create one, which
+is what makes it safe to leave open while driving.
+
+| Subscribes | Type | Used for |
+|---|---|---|
+| `/left_arm/joint_states` | `sensor_msgs/JointState` | `follower_left/joint_0…5`, gripper |
+| `/right_arm/joint_states` | `sensor_msgs/JointState` | `follower_right/joint_0…5`, gripper |
+| `/left_arm/ee_pose`, `/right_arm/ee_pose` | `geometry_msgs/PoseStamped` | the readouts in the side panel |
+| `/left_arm/active`, `/right_arm/active` | `std_msgs/Bool` | whether each agent holds its arm |
+| `/slate/odom` | `nav_msgs/Odometry` | where the base is, and the E-stop flag |
+
+Served at `http://<host>:8080` (`make sim` prints the URL).
+
+**It is a mirror, not a simulator.** Every angle comes from a real encoder. No
+physics, no contact, no prediction — if the model is somewhere the robot is not,
+the model is wrong. Good for "are the arms about to reach the same point" and
+"which way is the wrist actually facing"; useless for "would this trajectory
+collide", which needs a planner.
+
+The joint names are the one mapping this container does: the arms publish
+`joint_0…joint_5`, and the combined model prefixes them `follower_left/` and
+`follower_right/`. A name that does not resolve is logged once — silence there
+is the failure this is most exposed to, because an unmapped link simply stays at
+zero and the picture still looks plausible.

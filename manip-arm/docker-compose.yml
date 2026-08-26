@@ -52,6 +52,16 @@ x-arm-common: &arm-common
   # explicitly here so it is a decision rather than a side effect.
   ipc: host
 
+  # Come back automatically after a crash or a host reboot. This rig's USB
+  # Ethernet adapter has dropped off the bus mid-session more than once, and
+  # while arm_agent now survives that rather than dying, anything else that
+  # kills the process should not need a human to notice.
+  #
+  # Safe against hot-looping: start.sh pings the arm before connecting, so a
+  # restart with the link still down lands in the idle branch and waits there
+  # instead of restarting every second.
+  restart: unless-stopped
+
   volumes:
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
     - ./workspace:/home/robot/workspace
@@ -90,6 +100,22 @@ x-arm-env: &arm-env
   # CONNECTION, so pose.py/read_joints.py/teach.py cannot run against it.
   # false: bare shell, for those CLIs.
   AUTOSTART: "true"
+  # MOUNT FRAME -- where this arm's own axes point in the world you command in.
+  # The WXAI arms are bolted to the VERTICAL face of the scissor lift, so their
+  # base frames are rotated relative to the rig. Each line says which arm axis a
+  # world axis maps onto: "world +x moves the arm along its +z".
+  #
+  # Everything outside the arm container therefore speaks one world-aligned
+  # frame, and how a given arm happens to be bolted on stays a fact about that
+  # arm. Set all three to +x/+y/+z for the arm's raw frame.
+  ARM_WORLD_X: "+z"
+  ARM_WORLD_Y: "+y"
+  ARM_WORLD_Z: "-x"
+
+  # Report the end effector relative to wherever it was when the agent
+  # connected, so it starts at (0, 0, 0). false reports raw arm coordinates.
+  ARM_ZERO_ON_START: "true"
+
   ARM_MODEL: wxai_v0            # set to whatever your actual arm model string is
   # End effector variant: base (bare flange), leader (trigger handle), or
   # follower (gripper). Not cosmetic -- it feeds the gravity/friction

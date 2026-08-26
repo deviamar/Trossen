@@ -1,0 +1,50 @@
+# Where each subsystem is bolted onto the SLATE, for the combined model.
+#
+# Consumed by tools/build_rig_urdf.py, which writes sim/description/urdf/rig.urdf.
+# Edit here and re-run `make rig-urdf`; never hand-edit the generated URDF.
+#
+# xyz in metres, rpy in radians, both relative to the rig's base_link
+# (REP-103: +x forward, +y left, +z up, origin at the drive-axle midpoint at
+# ground level).
+#
+# CONFIDENCE IS NOT UNIFORM AND IS MARKED PER ENTRY. The arm ROTATIONS are
+# derived from the ARM_WORLD_* command remap, which was tuned against the real
+# arms until +x/+y/+z moved them the way the operator expected -- so they are
+# confirmed by the hardware. The POSITIONS are not: they come either from
+# Trossen's stock URDF or from a STEP extraction that is known to disagree with
+# itself. Treat every "estimate" below as a number to correct, not to trust.
+
+arms:
+  # Rotation: CONFIRMED. +90 deg about y, so the arm's own +z (its waist axis)
+  # points along world +x -- the arm points forward. This is exactly the inverse
+  # of ARM_WORLD_X=+z / ARM_WORLD_Y=+y / ARM_WORLD_Z=-x in
+  # manip-arm/docker-compose.yml, and the two must stay in step: if the command
+  # remap is retuned, this rotation is wrong until it is retuned too.
+  #
+  # Position: ESTIMATE, from Trossen's stock mobile_ai.urdf. Not measured on
+  # this rig.
+  left:
+    xyz: [0.331, 0.300, 0.831]
+    rpy: [0.0, 1.5707963, 0.0]
+  right:
+    xyz: [0.331, -0.300, 0.831]
+    rpy: [0.0, 1.5707963, 0.0]
+
+# ESTIMATE, from tools/step_tree.py against assets/Mobile_Base.STEP, expressed
+# relative to the SLATE part. Unverified: the same extraction put the two wxai
+# arms at an identical y, which cannot be right for a left/right pair, so the
+# whole set is suspect. Here so the lift APPEARS and can be corrected by eye.
+lift:
+  xyz: [0.226, 0.201, 0.90]
+  rpy: [0.0, 0.0, 0.0]
+  # Travel of the prismatic joint, metres. The driver reports height on
+  # /slate/lift/height; this is the range that reading is drawn over.
+  travel: [0.0, 0.40]
+
+# ESTIMATE, same source and same caveat. Mounted ON the lift platform, so it
+# rides up and down with it -- which is the reason the lift is in the model at
+# all rather than being drawn as a static block.
+middle:
+  parent: lift_platform
+  xyz: [0.012, 0.0, 0.10]
+  rpy: [0.0, 0.0, 0.0]

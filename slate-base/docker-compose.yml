@@ -40,6 +40,12 @@ services:
     # explicitly here so it is a decision rather than a side effect.
     ipc: host
 
+    # Come back automatically. This rig's USB devices re-enumerate mid-session
+    # (three times in one afternoon, nothing touched), and while the watchdog
+    # inside start.sh handles the serial node moving, anything that kills the
+    # container outright should not need a human to notice.
+    restart: unless-stopped
+
     # Same trade-off, and the same reasoning, as ../middle-arm/docker-compose.yml
     # -- but the case for it is stronger here. The tighter form would be
     # `devices: [/dev/ttySLATE]` plus `device_cgroup_rules: ["c 188:* rmw"]`

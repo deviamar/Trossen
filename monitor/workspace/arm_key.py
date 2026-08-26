@@ -787,8 +787,12 @@ def main():
         )
 
         # Safety: disable every arm before quitting.
-        if rclpy.ok():
+        # No rclpy.ok() guard: if the context somehow died the calls are
+        # no-ops, but skipping them outright is how the arms stayed enabled.
+        try:
             node.release_all()
+        except Exception:
+            pass
 
         print(
             "\n  released everything."

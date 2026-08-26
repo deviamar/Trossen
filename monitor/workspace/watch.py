@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Watch every topic on the rig, live, in one table.
 
-    ./watch.py                    # everything
+    ./watch.py --dash             # ONE LINE PER SUBSYSTEM -- start here
+    ./watch.py                    # every topic, one line each
     ./watch.py --filter slate     # only topics whose name contains this
     ./watch.py --once             # one snapshot, then exit (for piping)
     ./watch.py --hz 2             # redraw rate
@@ -9,6 +10,13 @@
 Subscribes to every topic it can find and shows name, type, rate and the latest
 value. It publishes nothing and commands nothing -- it is safe to leave running
 next to anything.
+
+--dash IS THE ONE TO LEAVE RUNNING. The full table is one line per topic, which
+is 40-odd lines once the whole rig is up -- too tall for a tmux pane and mostly
+things you are not watching. The dashboard collapses it to a line per
+subsystem: where the base is, where each arm is, what is connected. Use the
+full table when you are asking "is this topic alive at all", the dashboard when
+you are driving.
 
 WHY NOT `ros2 topic list` AND A PILE OF ECHOES. Because the question is almost
 never "what is on this one topic". It is "which half of the rig has gone quiet",
@@ -64,8 +72,13 @@ def summarize(msg):
         if t == "Odometry":
             p = msg.pose.pose.position
             tw = msg.twist.twist
+            # covariance[0] is -1 when the E-stop is engaged and 1 otherwise --
+            # the driver's own way of reporting it, since it publishes no state
+            # topic. With the E-stop in, the wheels are braked and every
+            # velocity command is accepted and ignored, silently.
+            estop = " ESTOP" if msg.pose.covariance[0] < 0 else ""
             return (f"x {p.x:+.3f} y {p.y:+.3f}  v {tw.linear.x:+.3f} "
-                    f"w {tw.angular.z:+.3f}")
+                    f"w {tw.angular.z:+.3f}{estop}")
         if t == "BatteryState":
             return f"{msg.percentage:.0f}%  {msg.voltage:.1f} V"
         if t == "Joy":
@@ -133,6 +146,102 @@ class Watcher(Node):
         span = w[-1] - w[0]
         return (len(w) - 1) / span if span > 1e-6 else 0.0
 
+
+    # ---- compact dashboard ----------------------------------------------
+    # Deliberately hand-written rather than generated from the topic list: the
+    # point is to show the few numbers that matter while driving, in a fixed
+    # layout that does not reflow when a topic appears or goes quiet. A
+    # dashboard whose lines move around is worse than no dashboard.
+    def _get(self, topic):
+        """(summary, age_seconds) or (None, None) if never seen."""
+        e = self.last.get(topic)
+        if not e or not e[2]:
+            return None, None
+        return e[1], time.monotonic() - e[2]
+
+    def _cell(self, topic, width, missing="--"):
+        """One value, TRUNCATED to fit. Never padded past the width.
+
+        A tmux pane is often 40 columns; a cell padded to a fixed 44 wraps, and
+        a wrapped dashboard is unreadable in exactly the situation it exists
+        for. Truncate and let the full table carry the detail.
+        """
+        val, age = self._get(topic)
+        if val is None:
+            text = missing
+        elif age > 3.0:
+            text = f"STALE {int(age)}s"
+        else:
+            text = val
+        return text[:width]
+
+    def _width(self):
+        import shutil
+        # Pane width, minus the indent. Floor of 32 so a very narrow pane
+        # degrades to something clipped rather than something reflowed.
+        return max(32, shutil.get_terminal_size((80, 24)).columns - 2)
+
+    def _xyz(self, topic):
+        """Just the position from a PoseStamped summary.
+
+        The full summary carries the quaternion too, which is the right thing
+        in the wide table and simply does not fit a quarter-pane column -- it
+        gets truncated mid-number, which is worse than omitting it.
+        """
+        val, age = self._get(topic)
+        if val is None:
+            return "--"
+        if age > 3.0:
+            return f"STALE {int(age)}s"
+        return val.split(")")[0] + ")" if "(" in val else val
+
+    def render_dash(self):
+        """One line per thing, sized to the pane.
+
+        No blank spacer lines and no trailing hint: a quarter of an 80x24
+        terminal is about 12 rows, and anything taller scrolls the top off --
+        so the BASE block, which is the part you are usually watching,
+        disappears first. Every line here earns its row.
+        """
+        import shutil
+        size = shutil.get_terminal_size((80, 24))
+        w = max(32, size.columns - 1)
+        val_w = max(14, w - 10)
+
+        base_rows = [
+            f"BASE odom {self._cell('/slate/odom', val_w)}",
+            f"     cmd  {self._cell('/slate/cmd_vel', val_w)}",
+            f"     batt {self._cell('/slate/battery_state', val_w)}",
+            f"     lift {self._cell('/slate/lift/height', val_w, '(none)')}",
+        ]
+        odom = self._get("/slate/odom")[0]
+        if odom is not None:
+            # Its own line rather than relying on the tag surviving the odom
+            # string's truncation in a narrow pane. "Nothing moves" has several
+            # causes and this is the one with no error message anywhere.
+            base_rows.append("     ESTOP ENGAGED -- wheels braked"
+                             if "ESTOP" in odom else "     estop clear")
+
+        arm_w = max(12, w - 12)
+        arm_rows = []
+        for ns, label in (("/left_arm", "left"), ("/right_arm", "right"),
+                          ("/middle", "cam")):
+            act, _ = self._get(f"{ns}/active")
+            flag = {"True": "ON  ", "False": "idle"}.get(str(act), "--  ")
+            arm_rows.append(f"{label:<5} {flag} {self._xyz(f'{ns}/ee_pose')[:arm_w]}")
+
+        conn, _ = self._get("/quest/connected")
+        tail = [f"quest {conn if conn is not None else 'off'}"
+                f"  |  {len(self.last)} topics"]
+
+        rows = base_rows + arm_rows + tail
+        # Spend rows on separators only if the pane can spare them, and insert
+        # them by position rather than a hardcoded index -- the BASE block
+        # changes length depending on whether odom is present.
+        if size.lines > len(rows) + 2:
+            rows = base_rows + [""] + arm_rows + [""] + tail
+        return "\n".join(rows)
+
     def render(self):
         now = time.monotonic()
         rows = [f"  {'topic':<44}{'type':<16}{'Hz':>7}  value",
@@ -161,6 +270,8 @@ def main():
     ap.add_argument("--filter", help="only topics whose name contains this")
     ap.add_argument("--hz", type=float, default=4.0, help="redraw rate")
     ap.add_argument("--once", action="store_true", help="one snapshot, then exit")
+    ap.add_argument("--dash", action="store_true",
+                    help="one line per subsystem instead of one per topic")
     args = ap.parse_args()
 
     rclpy.init()
@@ -173,15 +284,17 @@ def main():
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.05)
 
+        draw = node.render_dash if args.dash else node.render
+
         if args.once:
-            print(node.render())
+            print(draw())
             return 0
 
         while rclpy.ok():
             end = time.monotonic() + 1.0 / args.hz
             while rclpy.ok() and time.monotonic() < end:
                 rclpy.spin_once(node, timeout_sec=0.01)
-            block = node.render()
+            block = draw()
             if lines:
                 sys.stdout.write(f"\033[{lines}A")
             lines = block.count("\n") + 1

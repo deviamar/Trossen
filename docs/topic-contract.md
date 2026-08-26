@@ -116,15 +116,32 @@ Subscribed by `arm_agent.py`, which holds the arm's single SDK connection.
 
 | Topic | Type | Meaning |
 |---|---|---|
-| `<ns>/cmd_pose` | `geometry_msgs/PoseStamped` | **Absolute** target pose of the end effector in the arm's base frame |
+| `<ns>/cmd_pose` | `geometry_msgs/PoseStamped` | **Absolute** target pose of the end effector, world axes. Position AND orientation — all six DOF are commanded |
+| `<ns>/cmd_joints` | `sensor_msgs/JointState` | **Absolute** joint vector, radians. One discrete move, not a stream |
+| `<ns>/cmd_pose_name` | `std_msgs/String` | A name from this arm's `config/poses.yaml`, e.g. `home` |
 | `<ns>/cmd_gripper` | `std_msgs/Float32` | Opening in metres, 0.0 closed … 0.04 open |
-| `<ns>/enable` | `std_msgs/Bool` | `true` accepts `cmd_pose`; `false` holds position and ignores it |
+| `<ns>/cmd_grip_force` | `std_msgs/Float32` | Squeeze in newtons. Bounds what the gripper can do to what it holds |
+| `<ns>/enable` | `std_msgs/Bool` | `true` accepts motion; `false` holds position and ignores it |
+| `<ns>/zero` | `std_msgs/Bool` | Re-capture the origin: the current EE becomes (0,0,0). Persisted |
+| `<ns>/save_pose` | `std_msgs/String` | Record the current joints under this name |
+| `<ns>/reset` | `std_msgs/Bool` | Exit so the container restarts and reconnects with `--clear-error` |
 
 | Published | Type | Meaning |
 |---|---|---|
-| `<ns>/ee_pose` | `geometry_msgs/PoseStamped` | Measured end effector pose |
+| `<ns>/ee_pose` | `geometry_msgs/PoseStamped` | Measured end effector pose, world axes, origin applied |
 | `<ns>/joint_states` | `sensor_msgs/JointState` | `joint_0`…`joint_5` + `left_carriage_joint` |
+| `<ns>/pose_names` | `std_msgs/String` | Comma-separated names this arm can be sent to |
 | `<ns>/active` | `std_msgs/Bool` | Agent holds the connection and is accepting commands |
+
+**Joint space is not a convenience — it is the only escape from a singularity.**
+Near one the controller refuses Cartesian IK outright and every `cmd_pose` is
+rejected, so `cmd_joints` and `cmd_pose_name` are the only things that will move
+the arm. This is why `home` is reachable by name rather than by coordinate.
+
+**`save_pose` exists because the connection is exclusive.** While the agent is
+up, `pose.py` cannot reach the arm at all, so without this topic the only way to
+record a pose would be to stop the container — which drops the arm to idle and
+loses the posture you wanted to keep.
 
 **Absolute, not delta.** The publisher does the clutching and sends where the
 arm should be. A dropped message then costs one frame of lag rather than

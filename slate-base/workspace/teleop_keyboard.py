@@ -33,6 +33,7 @@ by the driver stopping first anyway.
 """
 import os
 import select
+import shutil
 import sys
 import termios
 import tty
@@ -197,9 +198,20 @@ def main():
                 rclpy.spin_once(node, timeout_sec=0.0)
 
                 moving = "MOVING" if (lin or ang) else "  --  "
-                sys.stdout.write(
-                    f"\r  {moving}  linear {lin:+.2f} m/s  angular {ang:+.2f} rad/s"
-                    f"   step {linear_step:.2f}/{angular_step:.2f}    ")
+                # TRUNCATE to the terminal width before writing.
+                #
+                # This is a single status line redrawn with \r, which only works
+                # while the line FITS. In a narrow window -- a tmux pane is
+                # typically 40 columns and this line is about 70 -- the terminal
+                # wraps it, \r returns to the start of the wrapped fragment
+                # rather than the start of the line, and every tick leaves
+                # another partial line behind. At 20 Hz that is a scrolling
+                # flood instead of a status display.
+                line = (f"  {moving}  lin {lin:+.2f}  ang {ang:+.2f}"
+                        f"   step {linear_step:.2f}/{angular_step:.2f}")
+                width = shutil.get_terminal_size((80, 24)).columns
+                sys.stdout.write("\r" + line[:max(20, width - 1)].ljust(
+                    min(len(line), max(20, width - 1))))
                 sys.stdout.flush()
         finally:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)

@@ -28,8 +28,8 @@ MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 .DEFAULT_GOAL := all
 .PHONY: all up build rebuild down restart status ps topics logs watch \
-        drive-test drive torque arms arm-go arm-stop jog shell env check \
-        clean fresh help
+        drive-test drive torque arms arm-go arm-stop key jog tmux shell env check dash \
+        clean fresh help home start save-pose sim rig-urdf kill orphans
 
 ## all: build what is missing, then start everything
 all: build up
@@ -56,8 +56,12 @@ down:
 restart:
 	@cd $(MAKEFILE_DIR) && $(COMPOSE) restart $(SVC)
 
-## status: containers, then every topic with its rate and latest value
-status: ps topics
+## status: containers, then one line per subsystem
+status: ps dash
+
+## dash: one line per subsystem -- the readable summary
+dash:
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec -T monitor bash -lc './watch.py --dash --once' 
 
 ## ps: which containers are up
 ps:
@@ -96,9 +100,66 @@ arm-go:
 	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec -T monitor \
 	  ./arm_ctl.py go $(POSE) --arm $(ARM) $(if $(EXECUTE),--execute,)
 
-## jog: keyboard Cartesian jog   (make jog ARM=/left_arm)
-jog:
-	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec monitor ./arm_key.py --arm $(or $(ARM),/left_arm)
+## home: send arms to their saved 'home'  (make home) -- add EXECUTE=1 to move
+# No ARM= sends EVERY arm at once. Joint-space, so this is also the recovery
+# that works at a singularity, where every Cartesian command is refused.
+home:
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec -T monitor \
+	  ./arm_ctl.py go home $(if $(ARM),--arm $(ARM),) $(if $(EXECUTE),--execute,)
+
+## start: send arms to their saved 'start' pose   (make start EXECUTE=1)
+start:
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec -T monitor \
+	  ./arm_ctl.py go start $(if $(ARM),--arm $(ARM),) $(if $(EXECUTE),--execute,)
+
+## save-pose: record where the arms are NOW under a name (NAME=start EXECUTE=1)
+# Goes through the running agent -- pose.py cannot, because the agent holds the
+# arm's only connection while the rig is up.
+save-pose:
+	@test -n "$(NAME)" || { echo "usage: make save-pose NAME=start [ARM=/left_arm] [EXECUTE=1]"; exit 2; }
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec -T monitor \
+	  ./arm_ctl.py save $(NAME) $(if $(ARM),--arm $(ARM),) $(if $(EXECUTE),--execute,)
+
+## rig-urdf: rebuild the combined model from sim/rig_params.yaml
+# Vendor URDFs + this rig's own geometry -> sim/description/urdf/rig.urdf.
+# Edit sim/rig_params.yaml, run this, restart sim. Never hand-edit rig.urdf.
+rig-urdf:
+	@cd $(MAKEFILE_DIR) && ./tools/build_rig_urdf.py
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) restart sim >/dev/null 2>&1 || true
+
+## sim: URL for the 3D view of the rig, drawn live from its own topics
+# Read-only: it subscribes to everything and publishes nothing, so it is safe
+# to leave open while driving. Autostarts with the rig.
+sim:
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) ps --services --filter status=running \
+	  | grep -qx sim || { echo "  sim is not running:  make up"; exit 1; }
+	@echo "  http://localhost:$(or $(RIG_SIM_PORT),8080)"
+	@echo "  from another machine:  http://$$(hostname -I | awk '{print $$1}'):$(or $(RIG_SIM_PORT),8080)"
+
+## kill: end the tmux session AND the processes it left in the containers
+# `tmux kill-session` alone is not enough: docker compose exec does not kill the
+# process inside the container when the client dies, so watch.py and rig_key.py
+# keep running and keep publishing to the command topics. tmux-rig.sh installs a
+# watcher that handles this automatically; this target is the explicit version,
+# and the one to reach for if a session was killed some other way.
+kill:
+	@cd $(MAKEFILE_DIR) && tmux kill-session -t $(or $(SESSION),rig) 2>/dev/null || true
+	@cd $(MAKEFILE_DIR) && ./rig-cleanup.sh --force
+
+## orphans: list container-side control processes without killing anything
+orphans:
+	@cd $(MAKEFILE_DIR) && ./rig-cleanup.sh --dry-run --force
+
+## tmux: one tmux session, one pane per live device
+tmux:
+	@cd $(MAKEFILE_DIR) && DOCKER="$(DOCKER)" ./tmux-rig.sh
+
+## key: unified keyboard control -- all three arms, base and lift at once
+key:
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec monitor ./rig_key.py
+
+## jog: alias for `key`, kept for muscle memory
+jog: key
 
 ## arm-stop: release every arm
 arm-stop:

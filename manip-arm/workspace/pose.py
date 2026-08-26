@@ -218,3 +218,55 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---- the origin: where "(0, 0, 0)" is ------------------------------------
+# Kept in its own file, not in poses.yaml, because the two answer different
+# questions. A pose is a place to GO; the origin is the frame everything is
+# MEASURED IN. Mixing them would let `pose.py save` rewrite the coordinate
+# system as a side effect.
+#
+# This has to survive a restart. The arm re-zeroing to wherever it happens to
+# be sitting is exactly wrong after a fault: the operator's mental map of the
+# workspace, and every coordinate they wrote down, silently shifts by however
+# far the arm drifted. Captured once, then reused until someone asks for a new
+# one -- so a restart reads the live end effector and applies the ORIGINAL
+# offset, which is the whole point.
+ORIGIN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "config", "origin.yaml")
+
+
+def load_origin(arm_name):
+    """The saved world-frame offset for this arm, or None if never set."""
+    if not os.path.exists(ORIGIN_FILE):
+        return None
+    with open(ORIGIN_FILE) as f:
+        data = yaml.safe_load(f) or {}
+    entry = data.get(arm_name)
+    if not entry:
+        return None
+    xyz = entry.get("offset") if isinstance(entry, dict) else entry
+    if not xyz or len(xyz) != 3:
+        return None
+    return [float(v) for v in xyz]
+
+
+def save_origin(arm_name, xyz, note=""):
+    """Persist this arm's origin. Read back verbatim by load_origin."""
+    data = {}
+    if os.path.exists(ORIGIN_FILE):
+        with open(ORIGIN_FILE) as f:
+            data = yaml.safe_load(f) or {}
+    entry = {"offset": [round(float(v), 6) for v in xyz]}
+    if note:
+        entry["note"] = note
+    data[arm_name] = entry
+    os.makedirs(os.path.dirname(ORIGIN_FILE), exist_ok=True)
+    with open(ORIGIN_FILE, "w") as f:
+        f.write("# Where (0, 0, 0) is, per arm, in WORLD axes (after the\n")
+        f.write("# ARM_WORLD_* mount remap). Captured at first start and kept\n")
+        f.write("# across restarts so a fault does not move the coordinate\n")
+        f.write("# system. Re-capture with the zero keys (4/5/6) in rig_key.py,\n")
+        f.write("# or delete a key here to re-zero on next start.\n")
+        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=True)
+    return entry["offset"]
