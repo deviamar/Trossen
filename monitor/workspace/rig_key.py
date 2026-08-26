@@ -72,6 +72,7 @@ import termios
 import time
 import tty
 
+import control_lock
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -549,35 +550,6 @@ class RigKey(Node):
         return (head + " ".join(bits))[:width]
 
 
-def other_instances():
-    """Other rig_key.py processes in this container, as (pid, cmdline).
-
-    Read from /proc rather than shelling out to pgrep: pgrep -f matches the full
-    command line of every process INCLUDING the one doing the matching, so the
-    obvious version finds itself and refuses to ever start.
-    """
-    me = os.getpid()
-    found = []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit() or int(entry) == me:
-            continue
-        try:
-            # comm is what the process IS. Matching only the command line finds
-            # any shell that happens to MENTION rig_key.py -- including the one
-            # that launched this -- so the check is anchored on the executable.
-            with open(f"/proc/{entry}/comm") as f:
-                comm = f.read().strip()
-            if not comm.startswith("python") and "rig_key" not in comm:
-                continue
-            with open(f"/proc/{entry}/cmdline", "rb") as f:
-                cmd = f.read().replace(b"\0", b" ").decode(errors="ignore").strip()
-        except OSError:
-            continue          # it exited while we were looking
-        if "rig_key.py" in cmd:
-            found.append((entry, cmd))
-    return found
-
-
 def read_keys(timeout_s):
     """Every key token readable within timeout_s.
 
@@ -665,22 +637,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    others = other_instances()
-    if others:
-        print("another rig_key.py is already running in this container:",
-              file=sys.stderr)
-        for pid, cmd in others:
-            print(f"    pid {pid}  {cmd}", file=sys.stderr)
-        print("\nTwo of these FIGHT. Both publish to the same command topics at\n"
-              "20 Hz and the newest message wins, so an old one whose dead-man has\n"
-              "expired injects zeroes into the base's velocity and a stale anchor\n"
-              "into the arms'. That reads as juddering motion and as commands\n"
-              "being ignored -- not as a duplicate process, which is why this\n"
-              "refuses to start rather than letting you find out.\n\n"
-              "    make kill        end the session and clean up\n"
-              "    make orphans     list them without killing anything",
-              file=sys.stderr)
-        return 2
+    busy = control_lock.refuse_if_busy("rig_key.py", sys.stderr)
+    if busy:
+        return busy
 
     if not sys.stdin.isatty():
         print("needs a real terminal -- `docker compose exec monitor bash`, "

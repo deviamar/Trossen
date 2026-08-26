@@ -606,6 +606,7 @@ class ArmAgent(Node):
             self.gripper = max(cfg.GRIPPER_CLOSED,
                                min(cfg.GRIPPER_OPEN, float(msg.data)))
             self.grip_force = None      # position wins; they are exclusive modes
+        self._apply_gripper()
 
     def _on_grip_force(self, msg):
         """Force control, newtons. Positive opens, negative closes.
@@ -626,6 +627,60 @@ class ArmAgent(Node):
         with self.lock:
             self.grip_force = max(-limit, min(limit, f))
             self.gripper = None
+        self._apply_gripper()
+
+    def _apply_gripper(self):
+        """Send the gripper command NOW, not on the arm's control tick.
+
+        THIS IS WHY THE GRIPPER USED TO DO NOTHING. It was applied inside
+        _control_tick, which begins:
+
+            if not self.enabled or self.target is None:
+                return
+
+        -- so the gripper only moved while a Cartesian target was actively
+        streaming. Arm an arm, press open, and nothing happened, because no
+        cmd_pose had arrived to create a target. Move the arm first and the next
+        gripper press worked, then stopped working again 300 ms after the last
+        cmd_pose when the target timed out. Both halves of "left did nothing,
+        right opened once and then never again" fall out of that one line.
+
+        The gripper has nothing to do with where the arm is going, so it no
+        longer rides on the arm's target.
+
+        THE MODE IS SET ONLY WHEN IT CHANGES. It latches in the controller, so
+        it does not need re-asserting -- and re-asserting it at 50 Hz was a real
+        bug that shook the whole arm. The VALUE is sent on every command, since
+        these are discrete key presses and a repeat should re-assert the squeeze.
+        """
+        with self.lock:
+            if not self.enabled or self.dry_run:
+                return
+            want = (("effort", self.grip_force) if self.grip_force is not None
+                    else ("position", self.gripper) if self.gripper is not None
+                    else None)
+            applied = self.grip_applied
+        if want is None:
+            return
+
+        mode, value = want
+        try:
+            if applied is None or applied[0] != mode:
+                self.driver.set_gripper_mode(
+                    trossen_arm.Mode.external_effort if mode == "effort"
+                    else trossen_arm.Mode.position)
+            if mode == "effort":
+                self.driver.set_gripper_external_effort(value, GOAL_TIME_S, False)
+            else:
+                self.driver.set_gripper_position(value, GOAL_TIME_S, False)
+        except Exception as e:
+            self.get_logger().error(f"gripper command refused: {e}")
+            return
+        with self.lock:
+            self.grip_applied = want
+        self.get_logger().info(
+            f"gripper: {mode} {value:+.3f}" + ("" if applied and applied[0] == mode
+                                               else f"  (mode -> {mode})"))
 
     # ---- outputs ---------------------------------------------------------
     def _control_tick(self):
@@ -639,7 +694,7 @@ class ArmAgent(Node):
                 self.target = None
                 self.get_logger().warn("cmd_pose timed out -- holding")
                 return
-            target, grip, grip_force = list(self.target), self.gripper, self.grip_force
+            target = list(self.target)
 
         if self.dry_run:
             return
@@ -654,34 +709,6 @@ class ArmAgent(Node):
             self.driver.set_cartesian_positions(
                 target, trossen_arm.InterpolationSpace.cartesian,
                 GOAL_TIME_S, False)
-            # EDGE-TRIGGERED, and this matters far more than it looks.
-            #
-            # This block used to call set_gripper_mode() on EVERY tick -- 50
-            # times a second for as long as any gripper command was active.
-            # Mode-setting is a configuration call, not a streaming one: each
-            # call reconfigures the controller, and doing that continuously
-            # disturbed the whole arm. It showed up as the arm shaking whenever
-            # the gripper was touched, on both arms, including one whose
-            # position control was otherwise fine.
-            #
-            # The mode and the value are now sent only when they CHANGE. Both
-            # modes latch in the controller -- external_effort holds the
-            # commanded squeeze, position holds the commanded opening -- so
-            # there is nothing to maintain by repetition.
-            want = (("effort", grip_force) if grip_force is not None
-                    else ("position", grip) if grip is not None
-                    else None)
-            if want is not None and want != self.grip_applied:
-                mode, value = want
-                if mode != (self.grip_applied or (None, None))[0]:
-                    self.driver.set_gripper_mode(
-                        trossen_arm.Mode.external_effort if mode == "effort"
-                        else trossen_arm.Mode.position)
-                if mode == "effort":
-                    self.driver.set_gripper_external_effort(value, GOAL_TIME_S, False)
-                else:
-                    self.driver.set_gripper_position(value, GOAL_TIME_S, False)
-                self.grip_applied = want
         except Exception as e:
             # The controller refuses anything it cannot follow and drops to
             # idle. Surface it and stop commanding rather than retrying into a

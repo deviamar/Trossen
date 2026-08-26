@@ -29,7 +29,7 @@ MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 .DEFAULT_GOAL := all
 .PHONY: all up build rebuild down restart status ps topics logs watch \
         drive-test drive torque arms arm-go arm-stop key jog tmux shell env check dash \
-        clean fresh help home start save-pose sim rig-urdf kill orphans
+        clean fresh help home start save-pose sim rig-urdf kill orphans debug
 
 ## all: build what is missing, then start everything
 all: build up
@@ -135,6 +135,13 @@ sim:
 	  | grep -qx sim || { echo "  sim is not running:  make up"; exit 1; }
 	@echo "  http://localhost:$(or $(RIG_SIM_PORT),8080)"
 	@echo "  from another machine:  http://$$(hostname -I | awk '{print $$1}'):$(or $(RIG_SIM_PORT),8080)"
+
+## debug: a SECOND tmux session for debugging one arm at a time
+# Joints, end-effector orientation and named poses -- the controls rig_key has
+# no keys left for. Stops the `rig` session first: both tools publish to the
+# same command topics and the newest message wins, so only one may run.
+debug:
+	@cd $(MAKEFILE_DIR) && DOCKER="$(DOCKER)" ./tmux-debug.sh
 
 ## kill: end the tmux session AND the processes it left in the containers
 # `tmux kill-session` alone is not enough: docker compose exec does not kill the
