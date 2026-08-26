@@ -58,7 +58,7 @@ command -v tmux >/dev/null || {
 
 up() { ${COMPOSE} ps --services --filter status=running 2>/dev/null | grep -qx "$1"; }
 
-if tmux has-session -t "${SESSION}" 2>/dev/null; then
+if tmux has-session -t "=${SESSION}" 2>/dev/null; then
   echo "  session '${SESSION}' already exists -- attaching."
   echo "  (kill it first with: tmux kill-session -t ${SESSION})"
   exec tmux attach -t "${SESSION}"
@@ -67,6 +67,16 @@ fi
 # Bring the rig up first. Previously this refused to start when the containers
 # were down and told you to run `make` -- which is a pointless extra step when
 # it can simply do it. `up -d` is a no-op for anything already running.
+# The debug session runs rig_debug.py, which publishes to the same command
+# topics as rig_key.py and is refused by control_lock.py. Killing it here is the
+# mirror of what tmux-debug.sh does to this session: exactly one control tool
+# may be live, and switching between them should be one command, not a puzzle
+# about which one is holding the topics.
+if tmux has-session -t =rig-debug 2>/dev/null; then
+  echo "  stopping the 'rig-debug' session -- only one control tool at a time"
+  tmux kill-session -t rig-debug 2>/dev/null || true
+fi
+
 # Anything left over from a previous session competes for the command topics
 # with what this one is about to start, so it goes first -- and --force,
 # because the session being created now does not yet exist to guard against.
@@ -190,7 +200,7 @@ tmux set-hook -g session-closed[71] \
 # watcher dies with the terminal that ran `make tmux`, which is exactly when it
 # is most needed.
 setsid nohup bash -c "
-  while tmux has-session -t '${SESSION}' 2>/dev/null; do sleep 2; done
+  while tmux has-session -t '=${SESSION}' 2>/dev/null; do sleep 2; done
   sleep 4
   '${PWD}/rig-cleanup.sh'
 " >/dev/null 2>&1 &

@@ -34,14 +34,14 @@ COMPOSE="${DOCKER} compose"
 
 command -v tmux >/dev/null || { echo "tmux is not installed: sudo apt install tmux" >&2; exit 1; }
 
-if tmux has-session -t "${SESSION}" 2>/dev/null; then
+if tmux has-session -t "=${SESSION}" 2>/dev/null; then
   echo "  session '${SESSION}' already exists -- attaching."
   exec tmux attach -t "${SESSION}"
 fi
 
 # The operating session has to go first: its rig_key.py would fight rig_debug.py
 # for the command topics, and control_lock.py would simply refuse to start.
-if tmux has-session -t rig 2>/dev/null; then
+if tmux has-session -t =rig 2>/dev/null; then
   echo "  stopping the 'rig' session -- only one control tool may run at a time"
   tmux kill-session -t rig 2>/dev/null || true
 fi
@@ -75,7 +75,7 @@ tmux select-pane -t "${SESSION}:debug.1"
 # Same watcher as the operating session: killing the LAST tmux session makes the
 # server exit before any hook can run, so cleanup cannot depend on tmux at all.
 setsid nohup bash -c "
-  while tmux has-session -t '${SESSION}' 2>/dev/null; do sleep 2; done
+  while tmux has-session -t '=${SESSION}' 2>/dev/null; do sleep 2; done
   sleep 4
   '${PWD}/rig-cleanup.sh' --force
 " >/dev/null 2>&1 &

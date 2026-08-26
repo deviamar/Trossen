@@ -101,6 +101,11 @@ CMD_TIMEOUT_S = 0.3
 # Largest jump accepted between the current pose and a new target. A real hand
 # moves maybe 2 m/s, so 0.05 m at 50 Hz is already generous; anything past it is
 # a tracking glitch, not a person.
+# Seconds between repeats of a "controller refused a command" message. Holding
+# a jog key against a joint limit would otherwise fault, clear and log every
+# frame, burying everything else.
+FAULT_LOG_S = 3.0
+
 MAX_STEP_M = 0.05
 MAX_STEP_RAD = 0.35
 
@@ -256,9 +261,8 @@ class ArmAgent(Node):
                 "Same frame as before the restart.")
         self.reset_requested = False
         self.losses = 0
-        # Set when the CONTROLLER itself reports a singularity, so _lost can
-        # clear the latched error and keep the connection instead of dying.
-        self.singular = False
+        # Rate-limits the "controller refused a command" message.
+        self.fault_said = 0.0
         # (mode, value) last actually sent to the gripper, so it is not resent
         # every tick. Cleared whenever the connection state changes, because
         # the controller's own mode does not survive a fault or a re-enable.
@@ -310,34 +314,53 @@ class ArmAgent(Node):
             self.target = None
             self.losses += 1
             self.grip_applied = None
-        if not (was_enabled or self.losses == 1):
-            return None
-        self.get_logger().error(f"lost the arm in {where}: {exc}")
-
-        # A singularity is not a lost arm. The link is fine; the controller
-        # refused an IK solution and LATCHED the error, after which every
-        # subsequent call rethrows it -- which is why one bad Cartesian target
-        # used to take down the whole connection and need a container restart.
+        # ---- is this a REJECTED COMMAND or a LOST ARM? ----------------
         #
-        # clear_error() unlatches it in place. The arm stays connected and
-        # braked, and joint-space commands still work: joint control has no IK
-        # and so no singularity. That is the way OUT, and the message says so,
-        # because "restart the container" is advice that does not help here --
-        # the arm would come back up in the same pose and refuse again.
-        if "singularity" in str(exc).lower():
-            try:
-                self.driver.clear_error()
-                self.singular = True
-                self.get_logger().error(
-                    "SINGULARITY, not a lost link. Error cleared, still connected.")
-                self.get_logger().error(
-                    "Cartesian moves will keep failing HERE. Get out in joint "
-                    "space: TAB in rig_key.py, then 1-6 / shift 1-6 -- or "
-                    "'make home ARM=<name>' to run the saved start pose.")
-                return None
-            except Exception as e2:
-                self.get_logger().error(f"clear_error() failed too: {e2}")
+        # They look identical from here -- both arrive as an exception out of
+        # the SDK -- and they need opposite responses. "Joint limit exceeded",
+        # "singularity", a following error: the link is fine, the controller
+        # refused one target and LATCHED the error, after which every later call
+        # rethrows it. A dropped Ethernet adapter: the arm is genuinely gone.
+        #
+        # clear_error() is the test as well as the cure. If it works, the
+        # connection is alive and the only real casualty was one bad command,
+        # so this stays up and stays ARMED and the next command starts fresh.
+        # If it throws, the arm really is unreachable and we fall through.
+        #
+        # Guessing from the message text was the earlier approach and it was
+        # wrong: it only recognised "singularity", so a joint-limit error --
+        # which is what wrist rotation near a singularity actually produces --
+        # took the whole connection down and made every later key press do
+        # nothing.
+        recovered = False
+        try:
+            self.driver.clear_error()
+            recovered = True
+        except Exception:
+            pass
 
+        if recovered:
+            with self.lock:
+                self.enabled = was_enabled     # stay armed; only the target died
+                self.target = None
+                self.grip_applied = None
+                # The controller drops out of position mode when it faults, so
+                # the next command has to re-enter it rather than assume.
+                self.mode_applied = None
+                self.losses -= 1               # not a loss; nothing was lost
+                now = self.get_clock().now().nanoseconds * 1e-9
+                say = now - self.fault_said > FAULT_LOG_S
+                if say:
+                    self.fault_said = now
+            if say:
+                self.get_logger().error(f"controller refused a command in {where}: {exc}")
+                self.get_logger().error(
+                    "Error cleared, STILL CONNECTED and still armed. That target "
+                    "was not reachable -- try a smaller step, or move in joint "
+                    "space (TAB in rig_debug.py, then 1-6 / shift 1-6).")
+            return None
+
+        self.get_logger().error(f"lost the arm in {where}: {exc}")
         self.get_logger().error(
             "disabled and holding. The arm is braked. Check the link "
             "(ping the controller), then: make restart SVC=<this arm>")
@@ -500,15 +523,6 @@ class ArmAgent(Node):
             return
 
         self.get_logger().info(f"{why}: moving over {goal_time:.1f} s")
-        if self.singular:
-            self.singular = False
-            self.get_logger().info(
-                "moving in joint space -- Cartesian will be re-checked on the "
-                "next cmd_pose")
-        # (mode, value) last actually sent to the gripper, so it is not resent
-        # every tick. Cleared whenever the connection state changes, because
-        # the controller's own mode does not survive a fault or a re-enable.
-        self.grip_applied = None
         try:
             self.driver.set_arm_modes(trossen_arm.Mode.position)
             self.mode_applied = "position"

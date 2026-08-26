@@ -200,6 +200,11 @@ POSES = {
 DEFAULT_SPEED_RAD_S = 0.6
 MIN_GOAL_TIME_S = 2.0
 
+# A move at or under JOG_MAX_RAD (~8.6 deg) is a jog, and gets a much shorter
+# floor so repeated presses feel like jogging rather than queueing.
+JOG_MAX_RAD = 0.15
+JOG_GOAL_TIME_S = 0.35
+
 
 def model_enum(name=None):
     """trossen_arm.Model for a model string like 'wxai_v0'."""
@@ -233,6 +238,21 @@ def joint_index(token):
     return JOINT_ALIASES.get(token)
 
 
-def goal_time_for(deltas, speed=DEFAULT_SPEED_RAD_S, minimum=MIN_GOAL_TIME_S):
-    """Seconds to allow for a move, from its largest joint delta."""
-    return max(minimum, max((abs(d) for d in deltas), default=0.0) / speed)
+def goal_time_for(deltas, speed=DEFAULT_SPEED_RAD_S, minimum=None):
+    """Seconds to allow for a move, from its largest joint delta.
+
+    THE FLOOR SCALES WITH THE MOVE. It used to be a flat MIN_GOAL_TIME_S for
+    everything, so a 3-degree jog was stretched to two full seconds -- and since
+    a new command cancels whatever is still executing, pressing jog keys at any
+    natural speed meant each press killed the previous one before it had
+    travelled. It looked like only one joint responded.
+
+    The 2 s floor exists for LARGE moves, where the SDK's own guard trips on
+    discontinuity: a big step with a short goal time is a trajectory the arm
+    cannot follow, and it errors out mid-motion. That reasoning does not apply
+    to a jog, which is small by definition.
+    """
+    biggest = max((abs(d) for d in deltas), default=0.0)
+    if minimum is None:
+        minimum = JOG_GOAL_TIME_S if biggest <= JOG_MAX_RAD else MIN_GOAL_TIME_S
+    return max(minimum, biggest / speed)

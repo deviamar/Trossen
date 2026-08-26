@@ -20,6 +20,11 @@ import os
 # what makes it mutually exclusive with the rest.
 CONTROL_TOOLS = ("rig_key.py", "rig_debug.py", "teleop_keyboard.py", "arm_key.py")
 
+# watch.py publishes NOTHING, so it never conflicts and the tools do not refuse
+# to start alongside it -- but it is still a process the cleanup must reap, or
+# every session leaves one behind burning a quarter of a core.
+CLEANUP_ALSO = ("watch.py",)
+
 
 def other_instances(exclude=()):
     """Control tools running in this container, as (pid, cmdline).
@@ -67,3 +72,33 @@ def refuse_if_busy(self_name, stream):
           "    make orphans     list them without killing anything",
           file=stream)
     return 2
+
+
+def _cli():
+    """`python3 control_lock.py --list` -> one `pid|cmdline` per line.
+
+    So rig-cleanup.sh can ask THIS file what counts as a control process instead
+    of keeping its own copy of the list. It kept one, the two drifted the moment
+    rig_debug.py was added, and the result was a tool that refused to start
+    because of a process `make orphans` swore was not there.
+    """
+    import sys
+    names = CONTROL_TOOLS + CLEANUP_ALSO
+    me = os.getpid()
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == me:
+            continue
+        try:
+            with open(f"/proc/{entry}/comm") as f:
+                if not f.read().strip().startswith("python"):
+                    continue
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode(errors="ignore").strip()
+        except OSError:
+            continue
+        if any(n in cmd for n in names):
+            print(f"{entry}|{cmd}")
+
+
+if __name__ == "__main__":
+    _cli()
