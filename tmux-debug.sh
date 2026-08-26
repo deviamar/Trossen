@@ -11,9 +11,7 @@
 #   |                           |  q/a w/s e/d  orientation |
 #   |                           |  u/j i/k o/l  position    |
 #   |                           |  p/ENTER poses  h home    |
-#   +---------------------------+---------------------------+
-#   |  shell -- arm_ctl.py, ros2 topic ...                  |
-#   +-------------------------------------------------------+
+
 #
 # SEPARATE FROM `rig`, AND MUTUALLY EXCLUSIVE WITH IT. rig_key.py and
 # rig_debug.py publish to the same command topics, and the newest message on a
@@ -62,15 +60,16 @@ tmux new-session -d -s "${SESSION}" -n debug \
   "${COMPOSE} exec monitor ./watch.py --dash; echo; echo '[state pane exited -- enter]'; read"
 tmux split-window -h -t "${SESSION}:debug" \
   "${COMPOSE} exec monitor ./rig_debug.py; echo; echo '[debug pane exited -- enter]'; read"
-LAST=$(tmux list-panes -t "${SESSION}:debug" -F '#{pane_index}' | tail -1)
-tmux split-window -v -t "${SESSION}:debug.${LAST}" "${COMPOSE} exec monitor bash"
+# Two panes only, same reasoning as the operating session: a third pane costs
+# the other two half their height, and rig_debug's status line is long. A shell
+# is Ctrl-b c away.
 
 # Mouse mode is not a convenience. Without it tmux does not interpret the scroll
 # wheel, so the terminal turns a scroll into ARROW KEYS and delivers them to the
 # focused pane -- which here is a tool that moves a robot arm.
 tmux set-option -t "${SESSION}" mouse on
 tmux set-option -t "${SESSION}" history-limit 20000
-tmux select-layout -t "${SESSION}:debug" tiled
+tmux select-layout -t "${SESSION}:debug" even-horizontal
 tmux select-pane -t "${SESSION}:debug.1"
 
 # Same watcher as the operating session: killing the LAST tmux session makes the

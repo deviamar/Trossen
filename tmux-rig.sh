@@ -13,9 +13,10 @@
 #   |  watch.py --dash          |  rig_key.py               |
 #   |  one line per subsystem   |  qwe/asd rty/fgh uio/jkl  |
 #   |                           |  arrows base, z/x n/m grip|
+#   |                           |                           |
 #   +---------------------------+---------------------------+
-#   |  shell -- arm_ctl.py, drive_test.py, ros2 topic ...   |
-#   +-------------------------------------------------------+
+#
+# Two panes, full height. A shell is Ctrl-b c, or `make shell SVC=monitor`.
 #
 # WHY EACH TOOL RUNS WHERE IT DOES. The base pane execs into slate-base and uses
 # that container's own teleop_keyboard.py rather than a copy living in monitor:
@@ -31,6 +32,7 @@
 # tool exits or ignores every key.
 #
 #   Ctrl-b then arrow   move between panes
+#   Ctrl-b then c       a new window, if you want a shell
 #   click a pane        focus it (mouse mode is on)
 #   scroll wheel        scroll THAT pane's history -- q or Esc to leave
 #   Ctrl-b then d       detach (everything keeps running)
@@ -124,11 +126,12 @@ tmux split-window -h -t "${SESSION}:rig" \
 echo "    control rig_key.py   (SPACE enable all | qwe/asd rty/fgh uio/jkl = +/- xyz"
 echo "                          arrows = base, z/x n/m grippers)"
 
-# A free shell last, so there is always somewhere to type arm_ctl.py or
-# drive_test.py without stealing a pane that is doing something.
-LAST_PANE=$(tmux list-panes -t "${SESSION}:rig" -F '#{pane_index}' | tail -1)
-tmux split-window -v -t "${SESSION}:rig.${LAST_PANE}" "${COMPOSE} exec monitor bash"
-echo "    shell   free terminal in monitor"
+# NO THIRD PANE. There used to be a free shell along the bottom, and it cost
+# the two panes that matter half their height -- the dashboard scrolled its own
+# top line away and the control pane's status line wrapped. A shell is one
+# keystroke away when it is actually wanted (Ctrl-b c for a new window, or
+# `make shell SVC=monitor` from anywhere), which is cheaper than paying for it
+# on every line of every session.
 
 # MOUSE MODE ON. This fixes two things that are the same bug wearing different
 # hats.
@@ -193,7 +196,7 @@ setsid nohup bash -c "
 " >/dev/null 2>&1 &
 disown 2>/dev/null || true
 
-tmux select-layout -t "${SESSION}:rig" tiled
+tmux select-layout -t "${SESSION}:rig" even-horizontal
 tmux select-pane -t "${SESSION}:rig.0"
 
 echo
