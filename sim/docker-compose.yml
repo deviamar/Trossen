@@ -1,0 +1,46 @@
+# =============================================================================
+# Rig visualiser -- the robot drawn from its own topics, served as a web page.
+#
+# Subscribes to everything, publishes NOTHING. It cannot move the robot, so it
+# is safe to leave running while you drive.
+#
+# Autostarts, unlike `monitor`: this one IS a service. It serves a page that is
+# only useful if it is already up when you want to look at it.
+#   http://<host>:8080
+# =============================================================================
+services:
+  sim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+      args:
+        USER_UID: ${UID:-1000}
+        USER_GID: ${GID:-1000}
+    image: rig-sim:latest
+    container_name: sim
+    network_mode: host
+
+    # Same reason as every other container here: Fast DDS negotiates shared
+    # memory on the same host, and a private /dev/shm means topics appear with
+    # no data on them. See monitor/docker-compose.yml for the full story.
+    ipc: host
+
+    environment:
+      # Without this, print() is block-buffered (stdout is a pipe, not a tty)
+      # and `docker compose logs sim` shows nothing until the buffer fills --
+      # which for a long-running server means effectively never.
+      - PYTHONUNBUFFERED=1
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - RIG_SIM_PORT=${RIG_SIM_PORT:-8080}
+      - RIG_DESCRIPTION=/home/robot/description
+
+    volumes:
+      - ./workspace:/home/robot/workspace
+      # The URDF and meshes, READ-ONLY. Vendored from trossen_arm_description
+      # rather than mounted out of the arm image, so the visualiser does not
+      # depend on an arm container being up to know what the robot looks like.
+      - ./description:/home/robot/description:ro
+
+    restart: unless-stopped

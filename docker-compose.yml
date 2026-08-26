@@ -61,3 +61,4 @@ include:
   - path: slate-base/docker-compose.yml      # AGV: drive (x, y) + lift (z)
   - path: quest/docker-compose.yml           # teleop source
   - path: monitor/docker-compose.yml         # watch topics, smoke-test the base
+  - path: sim/docker-compose.yml             # the rig drawn in a browser, read-only

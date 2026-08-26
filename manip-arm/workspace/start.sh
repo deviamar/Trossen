@@ -62,9 +62,14 @@ if ! ping -c1 -W2 "${ARM_IP}" >/dev/null 2>&1; then
   echo "      sudo nmcli con up trossen-arm"
   echo
   echo "  This container is UP but idle -- it publishes nothing."
-  echo "  Then:  make restart SVC=${ARM_NAME:-arm}"
+  echo "  Then:  make restart SVC=$(echo "${ARM_NAME:-arm}" | tr _ -)"
   echo "=================================================================="
   exec sleep infinity
 fi
 
-exec ./arm_agent.py "$@"
+# --clear-error on every start. The controller latches a fault and refuses
+# commands until it is cleared, and clearing happens at connect time -- so
+# without this a restart (including one triggered by <ns>/reset) reconnects
+# straight back into the same latched error and looks like the reset did
+# nothing. The error is still printed before it is cleared.
+exec ./arm_agent.py --clear-error "$@"

@@ -1,0 +1,10 @@
+# Viser serves the 3D view as a web page over websockets -- no X11, no RViz, no
+# display forwarding. That matters here: the rig is driven over ssh as often as
+# not, and RViz in a container needs xhost and a local display to show anything.
+viser>=0.2.7
+
+# URDF parsing plus the forward kinematics that turn joint angles into link
+# transforms. yourdfpy resolves the mesh paths; trimesh loads the STL/DAE.
+yourdfpy>=0.0.56
+trimesh>=4.0.0
+numpy>=1.24

@@ -9,6 +9,8 @@ Trossen/
 ├── docker-compose.yml   the whole rig — `include:`s the five below
 ├── setup.sh             per-machine bootstrap — run once after cloning
 ├── docs/
+│   ├── ROADMAP.md             what is built, what is next, in order
+│   ├── frames.md              every frame defined, + what to measure
 │   ├── topic-contract.md      the ONLY interface between containers
 │   └── topics-by-container.md which container owns which topic
 ├── third_party/pyroki/  submodule — JAX kinematics, for the active-vision arm's IK

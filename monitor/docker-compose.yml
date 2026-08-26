@@ -44,6 +44,11 @@ services:
 
     volumes:
       - ./workspace:/home/robot/workspace
+      # The arms' pose file, READ-ONLY. Only so `arm_ctl.py go` can show what a
+      # named pose actually is before sending it -- a dry run that prints the
+      # name and not the joint values is not a preview of anything. Read-only
+      # because the arms own this file; monitor must never write it.
+      - ../manip-arm/workspace/config:/home/robot/arm-config:ro
 
     stdin_open: true
     tty: true
