@@ -71,7 +71,13 @@ COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 # (a colcon overlay, the workspace path), and setting the same values twice is
 # harmless.
 ENV AMENT_PREFIX_PATH=/opt/ros/humble
-ENV LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib
+# BOTH multiarch dirs, because this image is built on amd64 AND on arm64
+# (Jetson). Debian puts the ROS libraries under a triplet directory that
+# differs per architecture, and the wrong one here is not a warning: rclpy
+# fails to load its C extension and every node dies at `import rclpy`. A
+# nonexistent entry in LD_LIBRARY_PATH is ignored, so naming both is safe
+# and keeps the value a plain literal rather than a build-arg.
+ENV LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
 ENV PATH=/opt/ros/humble/bin:$PATH
 ENV PYTHONPATH=/home/${USERNAME}/workspace:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages
 ENV ROS_VERSION=2

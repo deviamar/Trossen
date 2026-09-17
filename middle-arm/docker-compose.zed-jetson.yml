@@ -1,0 +1,72 @@
+# =============================================================================
+# Middle arm -- WITH-ZED override, JETSON. Layer on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.zed-jetson.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.zed-jetson.yml up -d
+#
+# This is docker-compose.zed.yml's counterpart for aarch64. It is a SEPARATE
+# file rather than a conditional inside that one because nothing about the two
+# is shared: a different base image, a different way of asking for the GPU, and
+# a tag that must match the host's JetPack. Layering both would merge, not
+# replace, and the desktop CUDA base would win.
+#
+# WHY A DIFFERENT BASE. stereolabs/zed:*-gl-devel-cuda*-ubuntu22.04 is built
+# for desktop CUDA on x86_64 and has no arm64 manifest. Jetson uses the L4T
+# images instead, which carry the ZED SDK built against the on-device CUDA that
+# JetPack itself provides.
+#
+# THE TAG MUST MATCH THE HOST'S JETPACK. The container borrows the host's
+# driver, so an image built for a different L4T release fails at runtime (the
+# ZED SDK reports no CUDA device, or libnvcuda fails to load). Check the host:
+#
+#     cat /etc/nv_tegra_release         # L4T version
+#     dpkg -l | grep nvidia-jetpack     # JetPack version
+#
+# then set ZED_JETSON_TAG to the matching stereolabs/zed tag. Available tags:
+#     docker run --rm curlimages/curl -s \
+#       'https://hub.docker.com/v2/repositories/stereolabs/zed/tags?page_size=100&name=jetson'
+#
+# JETPACK 6.x ONLY. JetPack 6 is Ubuntu 22.04 (jammy), which is what ROS 2
+# Humble has apt binaries for and what the rest of this image assumes (the
+# baked PYTHONPATH names python3.10). JetPack 7 is Ubuntu 24.04 and will NOT
+# work without moving the whole rig to a newer ROS distro.
+# =============================================================================
+services:
+  middle-arm:
+    build:
+      args:
+        # 'devel' rather than 'gl-devel': there is no gl- variant for Jetson.
+        # OpenGL on L4T comes from the host driver through the nvidia runtime,
+        # so RViz2 and the ZED tools still get hardware GL.
+        BASE_IMAGE: ${ZED_JETSON_TAG:-stereolabs/zed:5.4-devel-jetson-jp6.2.2}
+        WITH_ZED: "true"
+        # Pin to a tag or SHA once the setup is proven, so a rebuild on another
+        # machine reproduces this one instead of tracking upstream HEAD.
+        ZED_WRAPPER_REF: master
+    # Tag differs from BOTH the plain and the desktop-ZED image: three genuinely
+    # different builds that must not overwrite each other.
+    image: middle-arm:zed-jetson
+    environment:
+      # zedm | zed2i | zed | zedx ... must match the actual hardware. Unlike the
+      # desktop machine, ZED X *is* usable here -- it is Jetson-only and needs a
+      # GMSL2 capture card, so set this only if one is actually fitted.
+      - ZED_CAMERA_MODEL=zedm
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics,display
+
+    # `runtime: nvidia`, not deploy.resources.reservations.devices. On Jetson
+    # the GPU is not a discrete device the toolkit enumerates -- it is the SoC,
+    # exposed by the l4t runtime that JetPack installs. The desktop-style `count:
+    # all` reservation fails here with "could not select device driver".
+    runtime: nvidia
+
+    volumes:
+      # First camera launch optimizes the neural depth models for this specific
+      # GPU (several minutes, and noticeably longer on an Orin Nano than on a
+      # desktop card), and per-camera factory calibration is fetched by serial.
+      # Persisted so a `down`/`up` cycle does not redo either.
+      - zed-resources:/usr/local/zed/resources
+      - zed-settings:/usr/local/zed/settings
+
+volumes:
+  zed-resources:
+  zed-settings:
