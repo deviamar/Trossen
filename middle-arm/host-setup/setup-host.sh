@@ -36,7 +36,22 @@ fi
 # ---- 2. NVIDIA Container Toolkit --------------------------------------------
 # Needed for the GPU reservation in docker-compose.yml. The ZED SDK is CUDA-only;
 # without a GPU in the container the wrapper will not start at all.
-if docker info 2>/dev/null | grep -q nvidia; then
+if [ -f /etc/nv_tegra_release ]; then
+  # JETSON. JetPack ships and manages the container toolkit itself, and the
+  # version in NVIDIA's generic stable/deb repo is OLDER than the one L4T
+  # installed -- so this step used to end in
+  #     E: Packages were downgraded and -y was used without --allow-downgrades
+  # and, worse, "fixing" that with --allow-downgrades would replace a toolkit
+  # matched to the on-device driver with one that is not. Leave it alone.
+  info "Jetson ($(sed -n '1s/^# //p' /etc/nv_tegra_release)) -- JetPack provides the container toolkit, skipping"
+elif ! docker info >/dev/null 2>&1; then
+  # Not "no nvidia runtime" -- docker itself is unreachable, almost always
+  # because this user is not in the docker group yet. Installing the toolkit on
+  # top of that guess would be acting on a reading we did not actually get.
+  warn "cannot talk to the Docker daemon -- skipping the toolkit check"
+  warn "  if this is a permissions problem:  sudo usermod -aG docker $USER"
+  warn "  then log out and back in, and re-run this script"
+elif docker info 2>/dev/null | grep -q nvidia; then
   info "NVIDIA container runtime already registered with Docker"
 else
   info "Installing NVIDIA Container Toolkit"
@@ -63,7 +78,12 @@ else
 fi
 
 info "Verifying GPU passthrough"
-if docker run --rm --gpus all ubuntu:22.04 nvidia-smi -L; then
+if [ -f /etc/nv_tegra_release ]; then
+  # `--gpus all` is the discrete-GPU interface and is not how a Jetson exposes
+  # its SoC; the equivalent is `runtime: nvidia`, which is what
+  # docker-compose.zed-jetson.yml asks for. nvidia-smi is absent here too.
+  info "Jetson -- GPU reaches containers via 'runtime: nvidia', not --gpus (nothing to verify here)"
+elif docker run --rm --gpus all ubuntu:22.04 nvidia-smi -L; then
   info "GPU visible inside containers"
 else
   warn "GPU passthrough check failed -- resolve before building"

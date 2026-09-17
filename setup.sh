@@ -32,6 +32,27 @@ for project in $(find . -maxdepth 2 -name docker-compose.yml -printf '%h\n' \
   echo "wrote $project/.env  (UID=$uid GID=$gid)"
 done
 
+# ---- the docker group ---------------------------------------------------------
+# Checked here rather than left to the first build, because the failure it
+# produces names neither the cause nor the fix:
+#     permission denied while trying to connect to the docker API at
+#     unix:///var/run/docker.sock
+# On a desktop install the Docker convenience script usually adds you; on a
+# Jetson flashed from SDK Manager it usually has not.
+if ! docker info >/dev/null 2>&1; then
+  echo
+  if [ -S /var/run/docker.sock ] && ! id -nG | tr " " "\n" | grep -qx docker; then
+    echo "[!] $(id -un) is not in the 'docker' group -- every build will fail with"
+    echo "[!] 'permission denied ... /var/run/docker.sock'. Fix it with:"
+    echo "[!]     sudo usermod -aG docker $(id -un)"
+    echo "[!] then LOG OUT and back in (a new shell is not enough over ssh -- the"
+    echo "[!] group list is fixed at login), or build with:  make build DOCKER=\"sudo docker\""
+  else
+    echo "[!] cannot talk to the Docker daemon. Is it installed and running?"
+    echo "[!]     sudo systemctl status docker"
+  fi
+fi
+
 echo
 echo "Next:"
 echo "  everything at once:"

@@ -7,20 +7,23 @@ The short version: **the containers are architecture-clean and build on a Jetson
 unchanged**, with one exception (the ZED camera image) that has its own compose
 overlay. What follows is the checking that produced that claim, then the steps.
 
-## Before anything: JetPack 6.x, not 7
-
-Check the device:
+## Which JetPack you have, and what it constrains
 
 ```bash
-cat /etc/nv_tegra_release
-dpkg -l | grep nvidia-jetpack
+cat /etc/nv_tegra_release      # L4T release; R36.x = JetPack 6, R38/R39.x = JetPack 7
 ```
 
-JetPack 6 is Ubuntu 22.04 (jammy). That is not a preference — ROS 2 Humble
-publishes apt binaries for jammy only, every image here installs Humble from
-apt, and the two ROS images bake a `PYTHONPATH` naming `python3.10`. **JetPack 7
-is Ubuntu 24.04 and will not work** without moving the whole rig to a newer ROS
-distro, which is a much larger job than this port.
+**The host's Ubuntu version does not constrain the containers.** They carry their
+own userspace, so a JetPack 7 host (Ubuntu 24.04) runs these jammy images
+exactly as a JetPack 6 host does -- only the kernel is shared. Everything in
+`make build` is host-version-independent.
+
+It constrains exactly one thing: **the ZED SDK container**, which cannot be
+host-version-independent, because it borrows the host's GPU driver and so has to
+be built on a base image matching the host's L4T. On JetPack 7 that base is
+Ubuntu 24.04 -- and ROS 2 Humble has apt binaries for jammy only. See
+[The ZED camera](#the-zed-camera) for what to do about it; the short answer is
+that the headset video path does not use the ZED SDK at all.
 
 ## What was verified for arm64
 
@@ -49,7 +52,7 @@ Two things were actually wrong and are now fixed:
 git clone --recursive <your-repo-url> Trossen   # --recursive: pyroki, or the middle arm dies at `import pyroki`
 cd Trossen
 ./setup.sh                                      # .env with this machine's UID/GID
-./middle-arm/host-setup/setup-host.sh           # udev -> /dev/ttyDXL
+./middle-arm/host-setup/setup-host.sh           # udev -> /dev/ttyDXL (skips the NVIDIA toolkit on Jetson: JetPack owns it)
 ./slate-base/host-setup/setup-host.sh           # udev -> /dev/ttySLATE; offers to remove brltty
 make build                                      # every container, arm-only middle-arm variant
 ```
@@ -72,8 +75,24 @@ x86 boxes. See **What transfers, and what doesn't** in the main README.
 
 ## The ZED camera
 
-Use [`middle-arm/docker-compose.zed-jetson.yml`](../middle-arm/docker-compose.zed-jetson.yml),
-not `docker-compose.zed.yml`:
+**For headset teleop you do not need the ZED SDK, and should not build this.**
+The stereo video path is plain UVC: `stereo_cam.py` opens the camera as an
+ordinary V4L2 device (`/dev/video4`, MJPG 2560x720 side-by-side) and splits it
+into two eyes. No CUDA, no SDK, no wrapper, nothing L4T-specific -- it works on
+any JetPack. What you give up is depth and the neural modes, which teleop does
+not use, and real rectification: the synthetic intrinsics come from
+`QUEST_CAM_HFOV_DEG` / `QUEST_CAM_BASELINE_M` rather than factory calibration.
+
+If you do want the SDK (depth, positional tracking, the ROS wrapper's
+`camera_info`), there is a version conflict to resolve first:
+
+| Host | ZED base image | Ubuntu | Works with Humble? |
+| --- | --- | --- | --- |
+| JetPack 6.x (R36) | `stereolabs/zed:5.4-devel-jetson-jp6.2.2` | 22.04 | yes |
+| JetPack 7.x (R38/R39) | `stereolabs/zed:5.4-devel-jetson-jp7.2.1` | 24.04 | **no** -- Humble is jammy-only |
+
+On JetPack 6, [`middle-arm/docker-compose.zed-jetson.yml`](../middle-arm/docker-compose.zed-jetson.yml)
+is ready to go:
 
 ```bash
 cd middle-arm
@@ -85,15 +104,21 @@ It differs from the desktop overlay in three ways, all forced:
 
 - **Base image.** `stereolabs/zed:*-gl-devel-cuda*-ubuntu22.04` has no arm64
   manifest. Jetson uses the L4T images, which carry the ZED SDK built against
-  the CUDA that JetPack provides. The default is `5.4-devel-jetson-jp6.2.2`;
-  **the tag must match the host's JetPack** or the SDK reports no CUDA device at
-  runtime. Override without editing the file: `ZED_JETSON_TAG=... docker compose ...`.
+  the CUDA that JetPack provides. **The tag must match the host's JetPack** or
+  the SDK reports no CUDA device at runtime. Override without editing the file:
+  `ZED_JETSON_TAG=... docker compose ...`.
 - **`runtime: nvidia`** instead of a `deploy.resources.reservations.devices`
   block. On Jetson the GPU is the SoC, not a discrete device the toolkit
   enumerates; the desktop-style reservation fails with *could not select device
-  driver*.
+  driver*, and `--gpus all` does not apply either.
 - **Image tag `middle-arm:zed-jetson`**, so the three variants (plain, desktop
   ZED, Jetson ZED) cannot overwrite each other.
+
+On JetPack 7, the overlay as written will build an image whose base is noble and
+whose Humble install will fail. The options, none of them small: downgrade the
+Jetson to JetPack 6, split the ZED wrapper into its own Jazzy container and let
+it talk to the Humble nodes over DDS (standard `sensor_msgs` are wire-compatible
+across distros), or stay on the UVC path.
 
 ## Two hardware limits worth knowing before you commit
 
