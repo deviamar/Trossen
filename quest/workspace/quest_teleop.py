@@ -11,9 +11,12 @@ CONTROLS
     X  (left, hold)                  left arm follows the left controller
     A  (right, hold)                 right arm follows the right controller
     either X or A                    camera arm follows your HEAD
-    index trigger                    that arm's gripper, analog
-    left thumbstick  fwd/back        base drives forward/back
-    right thumbstick fwd/back        base rotates clockwise/anticlockwise
+    index trigger                    that arm's gripper: released stages the
+                                     fingers open, squeezed commands an analog
+                                     CLOSING FORCE (see quest_config.py)
+    left thumbstick                  base: fwd/back drives, left/right turns
+    right thumbstick fwd/back        scissor lift z velocity (simulated until
+                                     the lift hardware is wired in)
 
 Subscribes only to /quest/* and each component's own <ns>/ee_pose. Publishes
 only to components' command topics. No robot container knows this node exists --
@@ -26,9 +29,11 @@ clamp is the part worth understanding -- it CLAMPS an over-large step rather
 than rejecting it, so a tracking glitch becomes a slightly slower follow instead
 of a dropped frame. Rejecting reads to the operator as the arm stuttering.
 
-Two of those constants are per-rig and are almost certainly wrong here until
-measured: R_arm_remap (how the arms sit relative to the operator) and
-position_scale. See giava/teleop_map.py.
+The per-rig parts are now explicit: the session's arbitrary yaw is MEASURED
+from your gaze at engage (teleop_map.session_yaw_remap), and what remains --
+how you stand relative to the rig, and how far a hand-metre moves the EE -- is
+QUEST_ARM_REMAP_YAW_DEG / QUEST_POS_SCALE in quest_config.py, defaulting to
+"facing rig-forward" and 1:1.
 
 HOLD TO ENGAGE. Releasing the button stops the arm following you. A toggle
 leaves an armed robot behind when you set the controller down, and you find out
@@ -109,15 +114,26 @@ class Link:
 
         self.measured = None           # 4x4 from <ns>/ee_pose
         self.engaged = False
+        self.grip_sent = None          # last (kind, value) actually published
 
         node.create_subscription(PoseStamped, f"{ns}/ee_pose", self._on_ee, 1)
+        # What the AGENT says about itself, at 20 Hz. A fresh True after we
+        # publish enable is the only proof the enable has landed.
+        self.active = False
+        node.create_subscription(Bool, f"{ns}/active", self._on_active, 1)
         self.pub_cmd = node.create_publisher(PoseStamped, f"{ns}/cmd_pose", 1)
+        self.pub_name = node.create_publisher(String, f"{ns}/cmd_pose_name", 1)
         self.pub_enable = node.create_publisher(Bool, f"{ns}/enable", 1)
         self.pub_grip = (node.create_publisher(Float32, f"{ns}/cmd_gripper", 1)
                          if has_gripper else None)
+        self.pub_grip_force = (node.create_publisher(Float32, f"{ns}/cmd_grip_force", 1)
+                               if has_gripper else None)
 
     def _on_ee(self, msg):
         self.measured = msg_to_mat(msg)
+
+    def _on_active(self, msg):
+        self.active = bool(msg.data)
 
     def ready(self):
         return self.measured is not None
@@ -145,21 +161,46 @@ class Link:
         self.pub_cmd.publish(m)
 
     def publish_gripper(self, trigger):
-        """Analog trigger -> opening in metres.
+        """Released: stage the fingers open (position). Squeezed: closing FORCE.
 
-        giava commands its DYNAMIXEL grippers as a binary open/closed off
-        `trigger > 0`. The WXAI gripper is a linear joint in metres and takes a
-        continuous position, so the analog value is used directly -- strictly
-        more control than upstream had, for free.
+        giava's DYNAMIXEL grippers did this with current_based_position and a
+        Current_Limit register; the WXAI's native form is external_effort via
+        <ns>/cmd_grip_force -- the finger stops where the object is and
+        squeezes exactly as hard as asked, instead of a position loop faulting
+        the arm on a following error it can never close. The trigger is analog,
+        so squeeze harder to grip harder.
+
+        Deduplicated: a held trigger would otherwise be 50 Hz of identical
+        commands and log lines at the arm. Force is quantised to 0.5 N so
+        analog jitter does not defeat the dedup.
         """
         if self.pub_grip is None or self.dry_run:
             return
         t = max(0.0, min(1.0, float(trigger)))
         if t < cfg.TRIGGER_DEADZONE:
-            t = 0.0
+            # FORCE, not position. See cfg.OPEN_FORCE_N: opening by position
+            # both changed the gripper's mode on every release (a mode write
+            # momentarily drops the arm's control loop -- the twitch) and drove
+            # the fingers into their stop, which the controller answers by
+            # faulting the WHOLE ARM. Pushing apart with a force stops wherever
+            # the fingers stop and never leaves effort mode.
+            want = ("open", abs(cfg.OPEN_FORCE_N))
+        else:
+            span = cfg.GRASP_FORCE_MAX_N - cfg.GRASP_FORCE_MIN_N
+            f = cfg.GRASP_FORCE_MIN_N + span * (t - cfg.TRIGGER_DEADZONE) / (1.0 - cfg.TRIGGER_DEADZONE)
+            want = ("close", -round(f * 2.0) / 2.0)   # negative closes
+        if want == self.grip_sent:
+            return
         m = Float32()
-        m.data = float(cfg.GRIPPER_OPEN + (cfg.GRIPPER_CLOSED - cfg.GRIPPER_OPEN) * t)
-        self.pub_grip.publish(m)
+        m.data = float(want[1])
+        self.pub_grip_force.publish(m)        # one topic, one mode, both ways
+        self.grip_sent = want
+
+
+def _yaw_matrix(deg):
+    a = np.radians(float(deg))
+    c, s = np.cos(a), np.sin(a)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
 
 
 class QuestTeleop(Node):
@@ -167,6 +208,14 @@ class QuestTeleop(Node):
         super().__init__("quest_teleop")
         self.args = args
         self.cfg = TeleopConfig()
+        # Per-rig tuning comes from the environment (see quest_config.py); the
+        # TeleopConfig defaults are giava's rig, not this one.
+        self.cfg.position_scale = cfg.POSITION_SCALE * args.scale
+        self.cfg.cam_position_scale = cfg.CAM_POSITION_SCALE * args.scale
+        self.cfg.rotation_scale = cfg.ROTATION_SCALE
+        self.cfg.cam_rotation_scale = cfg.CAM_ROTATION_SCALE
+        self.cfg.R_arm_remap = _yaw_matrix(cfg.ARM_REMAP_YAW_DEG)
+        self.cfg.R_cam_remap = _yaw_matrix(cfg.CAM_REMAP_YAW_DEG)
         self.connected = False
         self.pose = {"left": None, "right": None, "head": None}
         self.joy = {"left": None, "right": None}
@@ -180,6 +229,10 @@ class QuestTeleop(Node):
             self.links["middle"] = Link(self, cfg.MIDDLE_NS, "middle", "camera",
                                         args.dry_run, has_gripper=False)
 
+        self._rest_was = False
+        self._rest_since = 0.0
+        self._quit_at = None
+        self._rest_pending = {}        # key -> deadline; enabled, name not yet sent
         self.state = TeleopSessionState()
         self.cmd_kin = CommandKinematicsState(T_cmd={})
 
@@ -197,6 +250,8 @@ class QuestTeleop(Node):
 
         self.pub_base = self.create_publisher(
             Twist, f"{cfg.BASE_NS}/cmd_vel_teleop", 1)
+        self.pub_lift = self.create_publisher(
+            Float32, f"{cfg.BASE_NS}/lift/cmd_velocity", 1)
         self.pub_feedback = self.create_publisher(String, cfg.TOPIC_FEEDBACK, 1)
 
         # giava runs its loop at 50 Hz (TeleopConfig.control_dt) and the arm
@@ -217,6 +272,7 @@ class QuestTeleop(Node):
             self.get_logger().warn("headset lost -- releasing everything")
             self._release_all()
             self._publish_base(0.0, 0.0)
+            self._publish_lift(0.0)
 
     # ---- helpers ---------------------------------------------------------
     def _button(self, hand, index=None):
@@ -241,7 +297,36 @@ class QuestTeleop(Node):
                 link.publish_enable(False)
 
     # ---- main loop -------------------------------------------------------
+    def _rest_pump(self):
+        """Second half of the B hold: send `rest` to each arm that has
+        confirmed its enable; keep re-asserting enable for the rest until
+        their deadline, then give up on those loudly."""
+        if not self._rest_pending:
+            return
+        now = self.get_clock().now().nanoseconds * 1e-9
+        for key in list(self._rest_pending):
+            link = self.links[key]
+            if link.active:
+                if not self.args.dry_run:
+                    link.pub_name.publish(String(data=cfg.REST_POSE))
+                self.get_logger().info(f"{link.ns}: enabled -- {cfg.REST_POSE!r} sent")
+                del self._rest_pending[key]
+            elif now >= self._rest_pending[key]:
+                self.get_logger().error(
+                    f"{link.ns}: never confirmed enable -- NOT parked, check its log")
+                del self._rest_pending[key]
+            else:
+                link.publish_enable(True)
+
     def _tick(self):
+        self._rest_pump()
+        if self._quit_at is not None:
+            # Parking. Drive nothing -- a streamed target would fight the
+            # named move -- and hold the link open until the arms are there.
+            if self.get_clock().now().nanoseconds * 1e-9 >= self._quit_at:
+                self.get_logger().info("parked -- ending the session")
+                raise SystemExit(0)
+            return
         if not self.connected:
             return
 
@@ -265,6 +350,7 @@ class QuestTeleop(Node):
             self._drive(key, link, poses, want[key])
 
         self._grippers()
+        self._rest_button()
         self._base()
         self._feedback(poses)
 
@@ -291,7 +377,13 @@ class QuestTeleop(Node):
             self.cmd_kin.T_cmd[key] = pose7(p, q)
 
         arms = [k for k in self.links if poses[k] is not None]
-        start_teleop_session(self.state, arms, poses, self.cmd_kin)
+        # base_remaps + the head pose let the anchor fold the session's
+        # measured yaw into each arm's remap -- the app world's yaw is
+        # arbitrary per session, so a fixed matrix alone cannot be right.
+        base_remaps = {k: (self.cfg.R_cam_remap if self.links[k].kind == "camera"
+                           else self.cfg.R_arm_remap) for k in arms}
+        start_teleop_session(self.state, arms, poses, self.cmd_kin,
+                             base_remaps=base_remaps, head_pose=self.pose["head"])
 
         # start_teleop_session builds fresh ArmTeleopState objects, whose
         # `active` defaults to False. Upstream re-sets the flags at the top of
@@ -339,6 +431,60 @@ class QuestTeleop(Node):
         self.cmd_kin.T_cmd[key] = np.concatenate(
             [np.asarray(target_wxyz, dtype=float), np.asarray(target_pos, dtype=float)])
 
+    def _rest_button(self):
+        """B (or Y) parks every arm at its saved rest pose.
+
+        Edge-triggered, so holding it sends one command rather than one per
+        tick, and refused outright while an arm is engaged: a whole-rig move
+        that can start under your thumb mid-teleop is not a convenience.
+
+        The arms are ENABLED first and deliberately left enabled -- an agent
+        ignores a named move while disabled, and disabling it mid-move would
+        drop the arm wherever it had got to.
+        """
+        if self._quit_at is not None:
+            return                       # already parking; one press is enough
+        if cfg.REST_BUTTON not in ("left", "right"):
+            return
+        pressed = self._button(cfg.REST_BUTTON, cfg.BTN_SECONDARY)
+        was, self._rest_was = self._rest_was, pressed
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if not pressed:
+            self._rest_since = 0.0
+            return
+        if not was:
+            self._rest_since = now          # just went down; start the clock
+            return
+        if now - self._rest_since < cfg.REST_HOLD_S:
+            return                          # still holding, not long enough yet
+        self._rest_since = now + 1e9        # fire once per hold, not every tick
+        if self.state.active:
+            self.get_logger().warn(
+                "rest button ignored while an arm is engaged -- let go first")
+            return
+        # Enable now; send the NAME only once each agent reports active.
+        # enable and cmd_pose_name are different topics and nothing orders
+        # them: sent back-to-back, an agent can see the name first and log
+        # "pose 'rest' ignored -- not enabled" -- B then quit the session
+        # with the arms still where they were. _rest_pump() finishes the job.
+        names = []
+        for key, link in self.links.items():
+            if link.measured is None:
+                continue
+            link.active = False           # want a FRESH True, not a stale one
+            link.publish_enable(True)
+            self._rest_pending[key] = now + 1.5
+            names.append(key)
+        self.get_logger().info(
+            f"REST: {', '.join(names) or 'nothing'} -> {cfg.REST_POSE!r} "
+            "(joint space, several seconds -- watch them)")
+        if cfg.REST_QUITS:
+            now = self.get_clock().now().nanoseconds * 1e-9
+            self._quit_at = now + cfg.REST_QUIT_WAIT_S
+            self.get_logger().info(
+                f"then ending the session in {cfg.REST_QUIT_WAIT_S:.0f} s "
+                "-- the arms are released only after they have parked")
+
     def _grippers(self):
         for hand in ("left", "right"):
             link = self.links.get(hand)
@@ -346,16 +492,24 @@ class QuestTeleop(Node):
                 link.publish_gripper(self._axis(hand, cfg.AXIS_TRIGGER))
 
     def _base(self):
+        # The lift is gated exactly like driving: the arms are bolted to the
+        # lift's face, so raising it while an arm holds an anchored target is
+        # the same base-moves-under-the-anchor problem as driving is.
+        locked = self.state.active and not self.args.allow_drive_while_engaged
+        lift = 0.0 if locked else (
+            cfg.apply_deadzone(self._axis("right", cfg.AXIS_STICK_Y)) * cfg.LIFT_MAX_VEL)
+        self._publish_lift(lift)
+
         if self.args.no_base:
             return
-        if self.state.active and not self.args.allow_drive_while_engaged:
+        if locked:
             self._publish_base(0.0, 0.0)
             return
+        # One stick for the whole plane: forward/back drives, left/right turns.
         lin = cfg.apply_deadzone(self._axis("left", cfg.AXIS_STICK_Y)) * cfg.BASE_MAX_VEL_X
-        axis = cfg.AXIS_STICK_Y if cfg.TURN_AXIS == "y" else cfg.AXIS_STICK_X
-        # Clockwise is negative yaw in REP-103, and this rig wants stick forward
-        # to turn clockwise -- hence the sign.
-        ang = -cfg.apply_deadzone(self._axis("right", axis)) * cfg.BASE_MAX_VEL_Z
+        ang = (cfg.TURN_SIGN
+               * cfg.apply_deadzone(self._axis("left", cfg.AXIS_STICK_X))
+               * cfg.BASE_MAX_VEL_Z)
         self._publish_base(lin, ang)
 
     def _publish_base(self, lin, ang):
@@ -365,6 +519,13 @@ class QuestTeleop(Node):
         m.linear.x = float(lin)
         m.angular.z = float(ang)
         self.pub_base.publish(m)
+
+    def _publish_lift(self, vel):
+        if self.args.dry_run:
+            return
+        m = Float32()
+        m.data = float(vel)
+        self.pub_lift.publish(m)
 
     # ---- feedback to the headset ----------------------------------------
     def _feedback(self, poses):
@@ -440,6 +601,9 @@ def main():
                     help="do not drive the active-vision arm")
     ap.add_argument("--allow-drive-while-engaged", action="store_true",
                     help="permit base motion while an arm is following you")
+    ap.add_argument("--scale", type=float, default=1.0,
+                    help="extra multiplier on hand->EE motion (on top of "
+                         "QUEST_POS_SCALE); 0.5 for cautious first sessions")
     ap.add_argument("--dry-run", action="store_true",
                     help="log intent, publish no robot commands")
     args = ap.parse_args()
@@ -451,14 +615,21 @@ def main():
     print(f"    hold A   -> {cfg.ARM_NS_RIGHT}")
     if not args.no_middle:
         print(f"    either   -> {cfg.MIDDLE_NS}  (follows your head)")
-    print(f"    sticks   -> {cfg.BASE_NS}/cmd_vel_teleop")
+    if cfg.REST_BUTTON in ("left", "right"):
+        b = "B" if cfg.REST_BUTTON == "right" else "Y"
+        tail = " then QUITS" if cfg.REST_QUITS else ""
+        print(f"    {b} (hold {cfg.REST_HOLD_S:.0f}s) -> all arms to "
+              f"{cfg.REST_POSE!r}{tail}, and only when nothing is engaged")
+    print(f"    L stick  -> {cfg.BASE_NS}/cmd_vel_teleop  (fwd/back + turn)")
+    print(f"    R stick  -> {cfg.BASE_NS}/lift/cmd_velocity  (z, sim until wired)")
     print("  waiting for the headset. Ctrl-C to stop.")
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
+    except (KeyboardInterrupt, ExternalShutdownException, SystemExit):
         if rclpy.ok():
             node._release_all()
             node._publish_base(0.0, 0.0)
+            node._publish_lift(0.0)
             print("\n  released everything.")
         else:
             print("\n  shut down externally -- downstream timeouts will stop the robots.")

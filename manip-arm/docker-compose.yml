@@ -116,12 +116,39 @@ x-arm-env: &arm-env
   # connected, so it starts at (0, 0, 0). false reports raw arm coordinates.
   ARM_ZERO_ON_START: "true"
 
+  # HOW STREAMED cmd_pose BECOMES MOTION.
+  #   joint_ik  our own IK (arm_kin.py on the URDF): the capped Cartesian
+  #             velocity becomes JOINT velocities. Works with the elbow folded
+  #             backward -- where rest lives and where the controller's own
+  #             Cartesian IK refuses or, worse, swings joints wildly.
+  #   velocity  the controller's Cartesian velocity IK. Positive-elbow only.
+  #   position  goal_time-paced position stream. Positive-elbow only.
+  # A `restart` does not reload this -- `docker compose up -d` recreates.
+  ARM_STREAM_MODE: "joint_ik"
+  ARM_MAX_LIN_VEL: "0.15"        # m/s cap on the end effector
+  ARM_MAX_ANG_VEL: "1.2"        # rad/s cap
+  ARM_VEL_KP: "3.5"             # error -> velocity gain, 1/s; ~1/Kp settle time
+  # How far a streamed target may LEAD the arm. Small lead = quick stop when
+  # the input goes quiet (release a key: the arm halts within this distance);
+  # it also bounds top speed at KP x LEAD, so keep KP x LEAD_M >= MAX_LIN_VEL.
+  ARM_MAX_LEAD_M: "0.07"
+  ARM_MAX_LEAD_RAD: "0.4"
+
   ARM_MODEL: wxai_v0            # set to whatever your actual arm model string is
   # End effector variant: base (bare flange), leader (trigger handle), or
   # follower (gripper). Not cosmetic -- it feeds the gravity/friction
   # compensation model, so a wrong value makes the arm sag or fight itself in
   # the force-based modes that teach.py and gripper.py use.
-  ARM_EE: wxai_v0_base
+  #
+  # follower, because these arms HAVE their grippers fitted. It ran as `base`
+  # for a while, and that is a prime suspect for a gripper that barely moves
+  # under cmd_grip_force: with no gripper in the model, the commanded newtons
+  # are converted to motor current without the carriage's own mass and
+  # friction, so much of a 20 N squeeze can be eaten before the fingers move
+  # -- and by how much varies per unit, which is how one arm's gripper "works"
+  # while the other's doesn't. Set back to wxai_v0_base only if the gripper is
+  # physically removed.
+  ARM_EE: wxai_v0_follower
   # Deliberately NOT 0 -- see the matching note in ../middle-arm/docker-compose.yml.
   # Zero is the ROS 2 default, so an unrelated teleop rig on the lab wifi lands in
   # the same graph. Must match that file or the arms stop discovering each other.

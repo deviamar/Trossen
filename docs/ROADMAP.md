@@ -24,10 +24,10 @@ Status as of the last update:
 | SLATE AGV | USB, `/dev/ttySLATE` | connected, driver up |
 | Left manipulator | Ethernet switch, 192.168.1.2 | connected, agent up |
 | Right manipulator | Ethernet switch, 192.168.1.3 | connected, agent up |
-| Middle arm (wx250s) | — | not connected |
+| Middle arm (wx250s) | USB, `/dev/ttyDXL` | cabled and enumerating; container needs a rebuild (pyroki/jaxls fix) then first bring-up via `--limp` |
 | ZED camera | — | not connected |
 | Scissor lift | — | not connected |
-| Quest headset | — | not connected |
+| Quest headset | — | not connected (secrets not yet in `quest/secrets/`) |
 
 The containers for the missing four still start; they detect their hardware is
 absent, say so, and idle. That is deliberate: `make` should never fail because

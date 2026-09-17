@@ -76,6 +76,15 @@ POS_KEYS = {"u": ("x", +1), "j": ("x", -1),
             "i": ("y", +1), "k": ("y", -1),
             "o": ("z", +1), "l": ("z", -1)}
 
+# How far this tool's accumulated target may lead the measured pose. Same
+# reasoning as rig_key.py's JOG_LEAD_M: key repeat adds steps far faster than
+# the arm can travel them, and the excess is a lie about where the operator
+# wants the arm -- it keeps moving after release and drifts the target away
+# from reality. Rotation needs its own limit because q/a/w/s/e/d accumulate the
+# same way.
+JOG_LEAD_M = 0.06
+JOG_LEAD_RAD = 0.35
+
 DEFAULT_JOINT_STEP = math.radians(3.0)
 DEFAULT_ROT_STEP = math.radians(5.0)
 DEFAULT_POS_STEP = 0.01
@@ -97,6 +106,30 @@ def quat_about(axis, angle):
     q = [0.0, 0.0, 0.0, math.cos(h)]
     q["xyz".index(axis)] = math.sin(h)
     return q
+
+
+def quat_conj(q):
+    return [-q[0], -q[1], -q[2], q[3]]
+
+
+def quat_angle(a, b):
+    """Smallest rotation angle between two quaternions, radians."""
+    d = sum(x * y for x, y in zip(a, b))
+    return 2.0 * math.acos(min(1.0, abs(d)))
+
+
+def quat_slerp_toward(frm, to, frac):
+    """`frac` of the way from `frm` to `to` -- used to pull a target back."""
+    d = sum(x * y for x, y in zip(frm, to))
+    if d < 0.0:                      # shortest arc
+        to = [-v for v in to]
+        d = -d
+    if d > 0.9995:                   # already there; lerp is exact enough
+        return quat_norm([f + (t - f) * frac for f, t in zip(frm, to)])
+    th = math.acos(min(1.0, d))
+    s = math.sin(th)
+    w0, w1 = math.sin((1.0 - frac) * th) / s, math.sin(frac * th) / s
+    return quat_norm([f * w0 + t * w1 for f, t in zip(frm, to)])
 
 
 def quat_norm(q):
@@ -232,6 +265,7 @@ class RigDebug(Node):
         # Pre-multiply: the delta is in the WORLD frame, so it goes on the left.
         # Post-multiplying would rotate about the tool's own axes instead.
         quat = quat_norm(quat_mul(quat_about(axis, sign * self.rot_step), quat))
+        pos, quat = self._clamp_lead(name, pos, quat)
         self.target[name] = (pos, quat)
         self._send(name)
         return f"{name} rot {axis}{'+' if sign > 0 else '-'} ({math.degrees(self.rot_step):.0f}deg)"
@@ -243,9 +277,27 @@ class RigDebug(Node):
         pos, quat = self.target[name]
         pos = list(pos)
         pos["xyz".index(axis)] += sign * self.pos_step
+        pos, quat = self._clamp_lead(name, pos, quat)
         self.target[name] = (pos, quat)
         self._send(name)
         return f"{name} {axis}{'+' if sign > 0 else '-'} -> ({pos[0]:+.3f} {pos[1]:+.3f} {pos[2]:+.3f})"
+
+    def _clamp_lead(self, name, pos, quat):
+        """Hold the target within JOG_LEAD_M / JOG_LEAD_RAD of the arm."""
+        meas = self.measured.get(name)
+        if meas is None:
+            return pos, quat
+        mp, mq = meas
+        gap = math.dist(pos, mp)
+        if gap > JOG_LEAD_M > 0 and gap > 1e-9:
+            k = JOG_LEAD_M / gap
+            pos = [mp[i] + (pos[i] - mp[i]) * k for i in range(3)]
+        ang = quat_angle(mq, quat)
+        if ang > JOG_LEAD_RAD and ang > 1e-9:
+            # Pull the target back along the arc toward the measured attitude,
+            # leaving exactly JOG_LEAD_RAD of it.
+            quat = quat_slerp_toward(quat, list(mq), 1.0 - JOG_LEAD_RAD / ang)
+        return pos, quat
 
     def cycle_pose(self):
         names = self.names.get(self.sel) or []
@@ -409,8 +461,15 @@ def main():
 
         import shutil
         while rclpy.ok():
-            for _ in range(8):            # drain callbacks, do not starve the timer
+            # Drain callbacks, do not starve the republish timer. 8 was sized
+            # when two arms meant 9 wait-set entries; three arms plus the
+            # middle's 100 Hz joint_states need more headroom, and an empty
+            # spin_once is a cheap no-op. See rig_key.drain_callbacks.
+            _drain_end = time.monotonic() + 0.008
+            for _ in range(40):
                 rclpy.spin_once(node, timeout_sec=0.0)
+                if time.monotonic() >= _drain_end:
+                    break
             try:
                 keys = read_keys(0.02)
             except EOFError:

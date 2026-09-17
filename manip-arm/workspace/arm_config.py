@@ -141,10 +141,38 @@ DEFAULT_JOINT_LIMITS = [
 # ~-pi/2 off and the honest repair is that joint's position_offset, not this
 # table: widening here would let the controller drive a joint whose commanded
 # angles are all 90 deg from reality.
+# joint_2 floor at -4.4 rad (-252 deg), not -pi. The clear route between rest
+# and start on this rig folds the elbow BACKWARD through -180 deg -- the hand-
+# guided start pose sits at -3.42 rad, and it overshot to -3.59 once -- and the
+# controller checks the present position against these limits the instant a
+# joint leaves idle. -4.4 covers that pose and its overshoot with margin; it is the furthest the elbow has been shown to go,
+# plus a little, and no further: past here nothing has been checked for cable
+# wrap around the joint.
 JOINT_LIMIT_OVERRIDES = {
     1: (-3.141593, 3.141593),
-    2: (-3.141593, 2.356194),
-    GRIPPER_INDEX: (-0.005, 0.04),
+    # -5.0 rad (-286 deg). The operator's chosen start sits at -4.542 rad, and
+    # a limit INSIDE the arm's actual posture is not a guard, it is a fight:
+    # the controller clips every streamed command to the limit while the joint
+    # reports beyond it, so the position loop never converges and the loaded
+    # shoulder visibly lags and jerks. Measured, not guessed -- see the pose
+    # saved as 'start'.
+    2: (-5.0, 2.356194),
+    # 0.05, not 0.04. The controller faults on REPORTED position outside
+    # [min - tol, max + tol] with tol = 0.004, so a 0.04 ceiling gives a window
+    # ending at 0.044 -- and the fingers' mechanical stop is at 0.04401. Open
+    # the gripper with force and the controller sees 0.04401, calls it "Joint 6
+    # position limit exceeded" and idles THE WHOLE ARM. That is what killed the
+    # right arm mid-demo. 0.05 puts the stop comfortably inside the window; it
+    # does not let the gripper travel further, the mechanism still stops itself.
+    # FLOOR -0.02, not -0.005. These two grippers do not share a zero: the left
+    # rests at -0.0017 m and the RIGHT at -0.0100, which is outside a -0.005
+    # floor once the controller's own 0.004 tolerance is applied. The
+    # controller checks REPORTED position the instant a joint leaves idle, so
+    # the right arm faulted -- red light, fingers motionless -- on every single
+    # gripper command, and the fault took the whole arm with it. -0.02 covers
+    # both units' resting offsets; it opens up no real travel, since the
+    # fingers are already shut at zero.
+    GRIPPER_INDEX: (-0.02, 0.05),
 }
 
 # No HOME constant here on purpose. This rig's home is a property of how the

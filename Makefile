@@ -29,7 +29,7 @@ MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 .DEFAULT_GOAL := all
 .PHONY: all up build rebuild down restart status ps topics logs watch \
         drive-test drive torque arms arm-go arm-stop key jog tmux shell env check dash \
-        clean fresh help home start save-pose sim rig-urdf kill orphans debug
+        clean fresh help home start save-pose sim rig-urdf kill orphans debug quest
 
 ## all: build what is missing, then start everything
 all: build up
@@ -111,6 +111,37 @@ home:
 start:
 	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec -T monitor \
 	  ./arm_ctl.py go start $(if $(ARM),--arm $(ARM),) $(if $(EXECUTE),--execute,)
+
+## quest: everything up, all arms to 'start', then headset teleop  (make quest)
+# The one command for a headset session.
+#
+# ONE COMMANDER AT A TIME, which is why this does NOT open the tmux keyboard
+# pane. rig_key.py and quest_teleop.py publish the same <arm>/cmd_pose topics
+# and the newest message wins, so running both means the headset and the
+# keyboard fight over every arm at 20-50 Hz -- which reads as the arm stuttering
+# rather than as a conflict. Use `make tmux` OR `make quest`, never both.
+#
+# The pose move is fire-and-forget on purpose: arm_ctl publishes enable + the
+# pose NAME and exits, and each agent executes the staged joint-space move and
+# its settle passes on its own. POSE_WAIT is how long we stand back before
+# handing the arms to the headset -- long enough for the slowest arm, and the
+# only thing lost by overshooting it is a few seconds.
+#
+#   make quest                      gvlink (the v2 Unity app)
+#   make quest QUEST_BACKEND=sim    no headset: a fake circle drives the arms
+#   make quest POSE_WAIT=25         slower arms, or a longer route to start
+QUEST_BACKEND ?= gvlink
+POSE_WAIT ?= 15
+quest:
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) up -d
+	@echo "  waiting for the arm agents to connect ..."
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec -T monitor ./wait_arms.py --timeout 45 \
+	  || echo "  ^ starting anyway with the arms that ARE up"
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec -T monitor ./arm_ctl.py go start --execute
+	@echo "  moving to 'start' -- WATCH THE ARMS ($(POSE_WAIT)s)"
+	@sleep $(POSE_WAIT)
+	@echo "  handing over to the headset. Ctrl-C stops teleop and releases the arms."
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec quest ./launch-quest.sh --backend $(QUEST_BACKEND)
 
 ## save-pose: record where the arms are NOW under a name (NAME=start EXECUTE=1)
 # Goes through the running agent -- pose.py cannot, because the agent holds the

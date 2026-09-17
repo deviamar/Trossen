@@ -128,11 +128,17 @@ echo "    state   watch.py --dash   (full table: ./watch.py in the shell pane)"
 # keystroke did, and a missing pane is harder to understand than one that says
 # why it is waiting.
 #
+# START ON LAUNCH is the default here: the control pane comes up by sending
+# every arm to its saved 'start' pose, so a session always begins from the same
+# known configuration. RIG_START_ON_LAUNCH=0 make tmux skips it; an arm with no
+# 'start' saved is skipped and named. Returning to 'rest' on quit is opt-in
+# (RIG_REST_ON_QUIT=1) until a 'rest' pose exists for every arm.
+#
 # rig_key.py handles base, lift and all three arms with one key map, and reports
 # what is missing rather than disappearing. The layout is now the same every
 # time, whatever is plugged in.
 tmux split-window -h -t "${SESSION}:rig" \
-  "${COMPOSE} exec monitor ./rig_key.py; echo; echo '[control pane exited -- press enter]'; read"
+  "${COMPOSE} exec -e RIG_START_ON_LAUNCH=${RIG_START_ON_LAUNCH:-1} -e RIG_REST_ON_QUIT=${RIG_REST_ON_QUIT:-0} monitor ./rig_key.py; echo; echo '[control pane exited -- press enter]'; read"
 echo "    control rig_key.py   (SPACE enable all | qwe/asd rty/fgh uio/jkl = +/- xyz"
 echo "                          arrows = base, z/x n/m grippers)"
 

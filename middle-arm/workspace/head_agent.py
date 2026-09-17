@@ -10,10 +10,20 @@ reason: the WXAI controller solves its own Cartesian IK and this arm's does not.
 xs_sdk speaks joint positions only, so somebody has to turn a pose into joint
 angles, and that somebody is middle_ik.py on pyroki.
 
-    subscribes  /middle/cmd_pose   geometry_msgs/PoseStamped   absolute target
-                /middle/enable     std_msgs/Bool               follow or hold
-    publishes   /middle/ee_pose    geometry_msgs/PoseStamped   measured, from FK
-                /middle/active     std_msgs/Bool
+    subscribes  /middle/cmd_pose      geometry_msgs/PoseStamped  absolute target
+                /middle/cmd_pose_name std_msgs/String            a saved pose, by name
+                /middle/save_pose     std_msgs/String            record where it is now
+                /middle/enable        std_msgs/Bool              follow or hold
+    publishes   /middle/ee_pose       geometry_msgs/PoseStamped  measured, from FK
+                /middle/pose_names    std_msgs/String            JSON list of poses
+                /middle/active        std_msgs/Bool
+
+A NAMED MOVE IS JOINT-SPACE AND RAMPED. xs_sdk applies a JointGroupCommand
+instantly, so a distant pose sent raw would be a lunge; instead the goal is
+walked from the current commanded configuration at MIDDLE_POSE_SPEED rad/s on
+the same 50 Hz tick the solver uses. Poses come from arm_config.POSES plus
+config/poses.yaml (pose.py save <name>), same split as the manipulators. A
+named move cancels a streaming target and vice versa.
 
 Contract identical to the manipulators' (docs/topic-contract.md), so the teleop
 node drives all three arms through one code path and does not care that this one
@@ -26,13 +36,13 @@ FIRST SOLVE COMPILES. jax traces on the first call; --warmup (default) pays that
 at startup with the arm still. Expect several seconds and a quiet terminal.
 
 SAFETY. enable=false, or no cmd_pose for CMD_TIMEOUT_S, holds position. Targets
-are refused if they are outside the workspace box or more than MAX_STEP_M from
-the current pose -- a lost tracking frame would otherwise become a lunge. The
-solver additionally clamps every joint step to what the arm could travel in one
-control period, so an unreachable target degrades into slow drift rather than a
-snap.
+outside the workspace box are refused; everything else is approached under the
+solver's per-joint velocity clamp, which turns a lost tracking frame or an
+unreachable target into slow drift rather than a snap -- and, unlike a
+distance-based refusal, cannot leave the arm permanently ignoring its input.
 """
 import argparse
+import json
 import math
 import os
 import sys
@@ -44,7 +54,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from interbotix_xs_msgs.msg import JointGroupCommand
 
 import arm_config as cfg
@@ -54,8 +64,47 @@ GROUP = "arm"
 
 STREAM_HZ = 50.0
 CMD_TIMEOUT_S = 0.3
-MAX_STEP_M = 0.08
+# No jump rejection -- see _reject_reason. The solver's per-tick joint
+# velocity clamp is what bounds motion toward a distant target.
+MAX_STEP_M = 0.08          # kept for reference; nothing reads it any more
 MAX_STEP_RAD = 0.5
+
+# Named (whole-arm) moves ramp at this many rad/s per joint -- deliberately
+# below JOINT_VELOCITY_LIMIT: a pose recall is a big move of every joint at
+# once, on the arm that carries the camera and its loom.
+POSE_SPEED = float(os.environ.get("MIDDLE_POSE_SPEED", 0.6))
+
+POSES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "config", "poses.yaml")
+
+# Re-written on every save, because yaml.safe_dump cannot preserve comments and
+# a pose file with no explanation of its units is a trap.
+POSES_HEADER = """# Named poses for the middle arm. Radians, in joint_order:
+#   [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate]
+# Written by pose.py, or by <ns>/save_pose (the save key in rig_key.py, which
+# captures all three arms at once). Built-in poses live in arm_config.POSES and
+# are overlaid by this file, so a name here wins.
+"""
+
+
+def load_poses():
+    """Built-in poses from arm_config, overlaid with config/poses.yaml.
+
+    Re-read on every use rather than cached, for the same reason arm_agent
+    re-reads: the yaml is bind-mounted, and a pose saved from the host should
+    appear without restarting this agent.
+    """
+    poses = {k: [float(x) for x in v]
+             for k, v in cfg.POSES.get("middle", {}).items()}
+    try:
+        import yaml
+        with open(POSES_FILE) as f:
+            user = yaml.safe_load(f) or {}
+        poses.update({k: [float(x) for x in v] for k, v in user.items()
+                      if isinstance(v, (list, tuple))})
+    except FileNotFoundError:
+        pass
+    return poses
 
 # Per-joint velocity ceiling fed to the solver's smoothness scaling and final
 # clamp. Deliberately below what the DYNAMIXELs can do: this arm carries a
@@ -84,6 +133,20 @@ class HeadAgent(Node):
         self.ee_link = ee_link
         self.dry_run = dry_run
 
+        # The neutral posture the solver leans toward when the target does not
+        # care -- see middle_ik.CENTER_WEIGHT. The saved 'start' pose, because
+        # that is the configuration the operator chose as "how this arm should
+        # look"; without it the extra seventh joint is spent arbitrarily.
+        self.q_center = None
+        try:
+            poses = load_poses()
+            name = os.environ.get("MIDDLE_CENTER_POSE", "start")
+            if name in poses:
+                n = robot.joints.num_actuated_joints
+                self.q_center = np.asarray(poses[name][:n], dtype=np.float64)
+        except Exception:
+            pass
+
         self.lock = threading.Lock()
         self.enabled = False
         self.target = None            # (position(3), wxyz(4))
@@ -91,13 +154,19 @@ class HeadAgent(Node):
         self.q_cmd = None             # last commanded configuration
         self.measured = None          # latest /joint_states, arm joints only
         self.rejects = 0
+        self.joint_goal = None        # named-pose destination, radians
+        self.goal_name = ""
 
         self.create_subscription(JointState, f"{NS}/joint_states", self._on_js, 1)
         self.create_subscription(PoseStamped, f"{NS}/cmd_pose", self._on_pose, 1)
+        self.create_subscription(String, f"{NS}/cmd_pose_name", self._on_pose_name, 1)
+        self.create_subscription(String, f"{NS}/save_pose", self._on_save_pose, 1)
         self.create_subscription(Bool, f"{NS}/enable", self._on_enable, 1)
 
         self.pub_ee = self.create_publisher(PoseStamped, f"{NS}/ee_pose", 1)
         self.pub_active = self.create_publisher(Bool, f"{NS}/active", 1)
+        self.pub_names = self.create_publisher(String, f"{NS}/pose_names", 1)
+        self.create_timer(1.0, self._names_tick)
         # The real xs_sdk interface: one JointGroupCommand for the whole arm
         # group, positions in radians in joint_order. Same topic and message
         # pose.py and move_joint.py already use, so this agent is one more
@@ -125,12 +194,14 @@ class HeadAgent(Node):
                 # to where the arm actually is; anchoring on a stale command
                 # would step the arm by however far it had drifted.
                 self.target = None
+                self.joint_goal = None
                 self.rejects = 0
                 if self.measured is not None:
                     self.q_cmd = self.measured.copy()
                 self.get_logger().info("enabled")
             elif not msg.data and self.enabled:
                 self.target = None
+                self.joint_goal = None
                 self.get_logger().info("disabled -- holding position")
             self.enabled = bool(msg.data)
 
@@ -142,24 +213,118 @@ class HeadAgent(Node):
         with self.lock:
             if not self.enabled or self.q_cmd is None:
                 return
-            current = self._fk(self.q_cmd)
-            why = self._reject_reason(current, want_p)
+            why = self._reject_reason(want_p)
             if why:
                 self.rejects += 1
                 if self.rejects % 25 == 1:
                     self.get_logger().warn(f"target refused ({self.rejects}): {why}")
                 return
             self.target = (want_p, want_q)
+            # Streaming and a named move must not fight over q_cmd.
+            self.joint_goal = None
             self.last_cmd = self.get_clock().now().nanoseconds * 1e-9
 
-    def _reject_reason(self, current_pos, want_p):
+    def _on_save_pose(self, msg):
+        """Record where this arm is right now, under a name.
+
+        The manipulators have had this since the beginning; this arm did not,
+        which meant a whole-rig 'start' or 'rest' pose could never be captured
+        -- two arms would save and the camera arm would be left out, so the
+        rig had no complete configuration to return to. Same topic name and
+        same semantics as arm_agent's, so one key in rig_key.py can save all
+        three at once.
+
+        Saving does NOT require the arm to be enabled: reading where it is is
+        not commanding it, and the natural workflow is to push the arm into
+        place with torque off and then record it.
+        """
+        name = msg.data.strip()
+        if not name:
+            return
+        with self.lock:
+            q = None if self.measured is None else [float(v) for v in self.measured]
+        if q is None:
+            self.get_logger().error(
+                f"cannot save {name!r} -- no joint_states yet (is the driver up?)")
+            return
+        try:
+            import yaml
+            try:
+                with open(POSES_FILE) as f:
+                    data = yaml.safe_load(f) or {}
+            except FileNotFoundError:
+                data = {}
+            data[name] = [round(v, 4) for v in q]
+            # Write via a temporary file: this file is bind-mounted and read
+            # back by load_poses() on every use, so a half-written file would
+            # be read by the next pose recall.
+            tmp = POSES_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(POSES_HEADER)
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=True)
+            os.replace(tmp, POSES_FILE)
+        except Exception as e:
+            self.get_logger().error(f"could not save {name!r}: {e}")
+            return
+        self.get_logger().info(
+            f"saved pose {name!r}: " + " ".join(f"{v:+.3f}" for v in q))
+
+    def _on_pose_name(self, msg):
+        name = msg.data.strip()
+        if not name:
+            return
+        poses = load_poses()
+        if name not in poses:
+            self.get_logger().error(
+                f"no pose {name!r}; have: {', '.join(sorted(poses))}")
+            return
+        goal = np.asarray(poses[name], dtype=np.float64)
+        lims = [cfg.JOINT_LIMITS[j] for j in cfg.JOINT_NAMES[:len(goal)]]
+        bad = [f"{cfg.JOINT_NAMES[i]}={v:.3f} outside [{lo:.3f}, {hi:.3f}]"
+               for i, (v, (lo, hi)) in enumerate(zip(goal, lims))
+               if not lo <= v <= hi]
+        if bad:
+            self.get_logger().error(f"pose {name!r} refused: {'; '.join(bad)}")
+            return
+        with self.lock:
+            if not self.enabled:
+                self.get_logger().warn(f"pose {name!r} ignored -- not enabled")
+                return
+            if self.q_cmd is None:
+                self.get_logger().warn(f"pose {name!r} ignored -- no joint_states yet")
+                return
+            n = min(len(goal), len(self.q_cmd))
+            self.target = None
+            self.joint_goal = goal[:n]
+            self.goal_name = name
+            secs = float(np.max(np.abs(self.joint_goal - self.q_cmd[:n]))) / POSE_SPEED
+        self.get_logger().info(
+            f"pose {name!r}: ramping over ~{secs:.1f} s at {POSE_SPEED} rad/s")
+
+    def _reject_reason(self, want_p):
+        """Gross nonsense only. Distance from the arm is NOT a reason.
+
+        This used to refuse any target more than MAX_STEP_M from the last
+        COMMANDED configuration's FK. The solver advances that configuration
+        under a joint-velocity clamp, so it necessarily lags a moving target,
+        and a commander that accumulates (rig_key adds a step per key repeat)
+        pulls ahead of it -- especially if this agent has just dropped a target
+        on a timeout and stopped while the operator kept pressing. Once the gap
+        passed the limit, every later command failed the same test and the arm
+        ignored the keyboard until it was disabled and re-enabled. The
+        manipulators had the identical bug; see arm_agent.py's MAX_LEAD_M note
+        for the full account.
+
+        Nothing is lost by dropping it: solve() clamps every joint to what it
+        could travel in one control period, so a far target is approached at a
+        bounded rate rather than lunged at.
+        """
+        if not np.all(np.isfinite(np.asarray(want_p, dtype=float))):
+            return "target contains NaN or infinity"
         for i, axis in enumerate("xyz"):
             lo, hi = WORKSPACE[axis]
             if not (lo <= float(want_p[i]) <= hi):
                 return f"{axis}={want_p[i]:.3f} outside workspace [{lo}, {hi}]"
-        step = float(np.linalg.norm(np.asarray(want_p) - np.asarray(current_pos)))
-        if step > MAX_STEP_M:
-            return f"jump of {step:.3f} m in one frame (limit {MAX_STEP_M})"
         return None
 
     # ---- kinematics ------------------------------------------------------
@@ -177,17 +342,63 @@ class HeadAgent(Node):
         return np.asarray(T.translation()), np.asarray(T.rotation().wxyz)
 
     # ---- outputs ---------------------------------------------------------
+    def _names_tick(self):
+        try:
+            names = sorted(load_poses())
+        except Exception as e:
+            self.get_logger().warn(f"cannot read poses: {e}",
+                                   throttle_duration_sec=30.0)
+            return
+        m = String()
+        m.data = json.dumps(names)
+        self.pub_names.publish(m)
+
+    def _pose_tick(self, goal, prev_q, name):
+        """One 50 Hz step of a named move: walk q_cmd toward the goal.
+
+        The ramp lives here rather than trusting xs_sdk with the whole goal
+        because a JointGroupCommand is applied INSTANTLY -- the driver has no
+        goal-time concept on this topic, so the pacing has to be in the stream.
+        """
+        n = len(goal)
+        step = POSE_SPEED / STREAM_HZ
+        q_new = prev_q.copy()
+        q_new[:n] = prev_q[:n] + np.clip(goal - prev_q[:n], -step, step)
+        done = bool(np.max(np.abs(goal - q_new[:n])) < 1e-4)
+        with self.lock:
+            if self.joint_goal is None:      # cancelled while we computed
+                return
+            self.q_cmd = q_new
+            if done:
+                self.joint_goal = None
+        if not self.dry_run:
+            self.pub_cmd.publish(
+                JointGroupCommand(name=GROUP, cmd=[float(v) for v in q_new]))
+        if done:
+            self.get_logger().info(f"pose {name!r} reached")
+
     def _control_tick(self):
         with self.lock:
-            if not self.enabled or self.target is None or self.q_cmd is None:
+            if not self.enabled or self.q_cmd is None:
                 return
-            now = self.get_clock().now().nanoseconds * 1e-9
-            if now - self.last_cmd > CMD_TIMEOUT_S:
-                self.target = None
-                self.get_logger().warn("cmd_pose timed out -- holding")
-                return
-            target_p, target_q = self.target
-            prev_q = self.q_cmd.copy()
+            if self.target is None:
+                goal = None if self.joint_goal is None else self.joint_goal.copy()
+                gname = self.goal_name
+                prev_q = self.q_cmd.copy()
+                if goal is None:
+                    return
+            else:
+                goal = None
+                now = self.get_clock().now().nanoseconds * 1e-9
+                if now - self.last_cmd > CMD_TIMEOUT_S:
+                    self.target = None
+                    self.get_logger().warn("cmd_pose timed out -- holding")
+                    return
+                target_p, target_q = self.target
+                prev_q = self.q_cmd.copy()
+
+        if goal is not None:
+            return self._pose_tick(goal, prev_q, gname)
 
         n = self.robot.joints.num_actuated_joints
         try:
@@ -197,6 +408,7 @@ class HeadAgent(Node):
                 prev_q=prev_q,
                 dt=1.0 / STREAM_HZ,
                 joint_velocity_limits=np.full(n, JOINT_VELOCITY_LIMIT, np.float32),
+                q_center=self.q_center,
             )
         except Exception as e:
             self.get_logger().error(f"IK failed: {e}")

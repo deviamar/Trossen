@@ -67,12 +67,44 @@ services:
       # serial port -- deliberately somewhere this file cannot raise it.
       - QUEST_BASE_MAX_X=0.25
       - QUEST_BASE_MAX_Z=0.6
-      # "y" = right stick forward/back turns (as specified for this rig).
-      # "x" = right stick left/right turns, which most people find natural.
-      - QUEST_TURN_AXIS=y
-      - QUEST_ARM_SCALE=1.0
+      # Left stick drives AND turns (fwd/back + left/right); the right stick's
+      # fwd/back is the scissor lift's z velocity -- simulated until the lift
+      # hardware is wired, same topic either way. -1 makes stick-left turn
+      # left under the contract's "stick X right-positive" convention; set +1
+      # if your app reports the axis the other way round.
+      - QUEST_TURN_SIGN=-1
+      - QUEST_LIFT_MAX_VEL=0.05
+      # Hand motion -> EE motion. giava ran 1.35; 1:1 until dialled in by feel.
+      - QUEST_POS_SCALE=1.0
+      # The camera arm, scaled separately and lower -- you are looking through
+      # it, so amplified head motion reads as the world swimming. 0.6 was
+      # giava's; this rig needed a little more to feel responsive.
+      - QUEST_CAM_POS_SCALE=0.68
+      # How the operator stands relative to the rig, degrees of yaw: 0 facing
+      # the same way as rig +x, 180 facing it head-on. The SESSION yaw (the
+      # app world's arbitrary heading) is measured from your gaze at engage,
+      # so it does not belong here.
+      - QUEST_ARM_REMAP_YAW_DEG=0
+      - QUEST_CAM_REMAP_YAW_DEG=0
+      # Trigger -> closing force, newtons (the arm agent hard-caps at 100 N).
+      - QUEST_GRASP_MIN_N=5
+      - QUEST_GRASP_MAX_N=40
+      # B on the right controller: park every arm at 'rest', then end the
+      # session. false leaves teleop running after parking. The wait is how
+      # long the link stays up so the agents can finish the move.
+      - QUEST_REST_BUTTON=right
+      - QUEST_REST_QUITS=true
+      - QUEST_REST_QUIT_WAIT=12
       - QUEST_MIDDLE_NS=/middle
       - QUEST_SECRETS_DIR=/secrets
+      # Where the bind mount above lands. gvlink_headset.py puts this on
+      # sys.path before importing the protocol.
+      - GVLINK_PATH=/opt/gvlink
+      # Name shown in the headset's robot picker / broadcast in the beacon.
+      - GIAVA_ROBOT_NAME=trossen
+      # gvlink needs no secrets and no cloud: the headset finds this process by
+      # LAN beacon on 15550 and opens TCP 15551. network_mode: host already
+      # gives it the host's interfaces, so nothing here has to be published.
       # The stereo pair pushed back to the headset, from the middle arm's ZED.
       # Whatever resolution the ZED publishes is resized to STEREO_WIDTH x
       # STEREO_HEIGHT before it goes down the wire, so the camera can stay
@@ -84,11 +116,33 @@ services:
       - QUEST_STEREO_RIGHT=/middle_cam/zed_node/right/image_rect_color
       - QUEST_STEREO_WIDTH=640
       - QUEST_STEREO_HEIGHT=480
+      # A local SBS stereo camera (empty = use the ROS topics above instead).
+      # Uncalibrated, so the viewer is given synthesised geometry -- measure
+      # these two if the stereo does not sit comfortably.
+      - QUEST_CAMERA=/dev/video4
+      - QUEST_CAM_HFOV_DEG=70
+      - QUEST_CAM_BASELINE_M=0.06
       - ROS_DOMAIN_ID=42
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
+    # A side-by-side USB stereo camera, when one is plugged in. group_add gives
+    # the container user the host's `video` group so /dev/video* is readable
+    # without running privileged. The ZED on the middle arm does NOT come
+    # through here -- it is that container's device and arrives as ROS topics.
+    devices:
+      - /dev/video4:/dev/video4
+    group_add:
+      - video
+
     volumes:
       - ./workspace:/home/robot/workspace
+      # THE gvlink PROTOCOL LIBRARY, from the Unity repo. Bind-mounted rather
+      # than vendored on purpose: the Python sender and the C# viewer have to
+      # agree byte for byte, so there is exactly one copy of it and it lives
+      # beside the C#. Clone av-aloha-unity (branch v2) into ~/av-aloha-unity
+      # -- a missing checkout surfaces as an ImportError from the gvlink
+      # backend and nothing else breaks.
+      - ${GVLINK_SRC:-${HOME}/av-aloha-unity/Guided-Vision/python}:/opt/gvlink:ro
       # WebRTC signalling secrets: a Firestore service account and the
       # robotID/password/TURN settings. Read-only, and mounted rather than
       # baked in -- they are credentials, and an image gets pushed around.

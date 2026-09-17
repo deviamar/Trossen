@@ -50,4 +50,7 @@ def load(name, **kwargs):
     if name == "webrtc":
         from .webrtc import WebRtcBackend
         return WebRtcBackend(**kwargs)
-    raise SystemExit(f"unknown backend {name!r}; have: udp, sim, webrtc")
+    if name == "gvlink":
+        from .gvlink import GvLinkBackend
+        return GvLinkBackend(**kwargs)
+    raise SystemExit(f"unknown backend {name!r}; have: gvlink, udp, sim, webrtc")
