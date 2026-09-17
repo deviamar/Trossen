@@ -55,23 +55,53 @@ if [ ! -e "${DXL_PORT:-/dev/ttyDXL}" ]; then
   exec sleep infinity
 fi
 
+# PREFLIGHT: prove the solver can import BEFORE torquing anything. The failure
+# this prevents was real: the driver launched and TORQUED the arm, head_agent
+# then died on an import error (stale image), the container exited with it and
+# killed the driver -- leaving the motors locked, no /middle topics, and a U2D2
+# whose data LED never blinks. Now a broken solver stops the show while the arm
+# is still untouched.
+if ! err=$(python3 -c "import middle_ik" 2>&1); then
+  echo "=================================================================="
+  echo "  middle-arm: head_agent's IK stack cannot import -- NOT starting"
+  echo "  the driver (it would torque the arm and then die with the agent)."
+  echo
+  echo "${err}" | tail -4
+  echo
+  echo "  This is the stale-image failure: rebuild picks up the pinned"
+  echo "  pyroki/jaxls fix in the Dockerfile:"
+  echo "      docker compose up -d --build middle-arm    (~25 min)"
+  echo "=================================================================="
+  exec sleep infinity
+fi
+
 echo "=== middle-arm starting ==="
 
 echo "  generating URDF -> ${URDF}"
-./launch-arm.sh --dump-urdf > "${URDF}"
+# prep_urdf.py strips the phantom `gripper` joint (the servo is not fitted --
+# leaving it in gives pyroki 7 actuated joints against xs_sdk's 6) and grafts
+# camera_link onto the flange with the MIDDLE_ZED_* offsets, so head_agent's
+# targets mean the camera rather than the flange.
+./launch-arm.sh --dump-urdf | ./prep_urdf.py > "${URDF}"
 
 ./launch-arm.sh > "${ROS_WS:-$HOME/workspace}/driver.log" 2>&1 &
 PIDS+=($!)
 echo "  driver started (TORQUED), logging to driver.log"
 
+# Wait on actual DATA, not graph metadata, and bypass the ros2 CLI daemon.
+# Every container shares the host network, so `ros2 topic info` talks to
+# whichever container's daemon grabbed this domain's port first -- and a stale
+# or wedged daemon then reports nothing for a topic that is demonstrably
+# publishing (observed: 30 s of dots while driver.log said "Driver is up!").
+# `echo --once` subscribes directly: if a message arrives, the driver is up,
+# whatever any daemon thinks.
 echo -n "  waiting for /middle/joint_states "
-for _ in $(seq 1 60); do
-  if ros2 topic info /middle/joint_states 2>/dev/null | grep -q "Publisher count: [1-9]"; then
+for _ in $(seq 1 12); do
+  if timeout 5 ros2 topic echo --once --no-daemon /middle/joint_states >/dev/null 2>&1; then
     echo "-- up."
     break
   fi
   echo -n "."
-  sleep 0.5
 done
 
 # The first IK solve traces and compiles under jax, which takes seconds. Doing

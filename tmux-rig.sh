@@ -13,9 +13,10 @@
 #   |  watch.py --dash          |  rig_key.py               |
 #   |  one line per subsystem   |  qwe/asd rty/fgh uio/jkl  |
 #   |                           |  arrows base, z/x n/m grip|
+#   |                           |                           |
 #   +---------------------------+---------------------------+
-#   |  shell -- arm_ctl.py, drive_test.py, ros2 topic ...   |
-#   +-------------------------------------------------------+
+#
+# Two panes, full height. A shell is Ctrl-b c, or `make shell SVC=monitor`.
 #
 # WHY EACH TOOL RUNS WHERE IT DOES. The base pane execs into slate-base and uses
 # that container's own teleop_keyboard.py rather than a copy living in monitor:
@@ -31,6 +32,7 @@
 # tool exits or ignores every key.
 #
 #   Ctrl-b then arrow   move between panes
+#   Ctrl-b then c       a new window, if you want a shell
 #   click a pane        focus it (mouse mode is on)
 #   scroll wheel        scroll THAT pane's history -- q or Esc to leave
 #   Ctrl-b then d       detach (everything keeps running)
@@ -56,7 +58,7 @@ command -v tmux >/dev/null || {
 
 up() { ${COMPOSE} ps --services --filter status=running 2>/dev/null | grep -qx "$1"; }
 
-if tmux has-session -t "${SESSION}" 2>/dev/null; then
+if tmux has-session -t "=${SESSION}" 2>/dev/null; then
   echo "  session '${SESSION}' already exists -- attaching."
   echo "  (kill it first with: tmux kill-session -t ${SESSION})"
   exec tmux attach -t "${SESSION}"
@@ -65,6 +67,16 @@ fi
 # Bring the rig up first. Previously this refused to start when the containers
 # were down and told you to run `make` -- which is a pointless extra step when
 # it can simply do it. `up -d` is a no-op for anything already running.
+# The debug session runs rig_debug.py, which publishes to the same command
+# topics as rig_key.py and is refused by control_lock.py. Killing it here is the
+# mirror of what tmux-debug.sh does to this session: exactly one control tool
+# may be live, and switching between them should be one command, not a puzzle
+# about which one is holding the topics.
+if tmux has-session -t =rig-debug 2>/dev/null; then
+  echo "  stopping the 'rig-debug' session -- only one control tool at a time"
+  tmux kill-session -t rig-debug 2>/dev/null || true
+fi
+
 # Anything left over from a previous session competes for the command topics
 # with what this one is about to start, so it goes first -- and --force,
 # because the session being created now does not yet exist to guard against.
@@ -116,19 +128,26 @@ echo "    state   watch.py --dash   (full table: ./watch.py in the shell pane)"
 # keystroke did, and a missing pane is harder to understand than one that says
 # why it is waiting.
 #
+# START ON LAUNCH is the default here: the control pane comes up by sending
+# every arm to its saved 'start' pose, so a session always begins from the same
+# known configuration. RIG_START_ON_LAUNCH=0 make tmux skips it; an arm with no
+# 'start' saved is skipped and named. Returning to 'rest' on quit is opt-in
+# (RIG_REST_ON_QUIT=1) until a 'rest' pose exists for every arm.
+#
 # rig_key.py handles base, lift and all three arms with one key map, and reports
 # what is missing rather than disappearing. The layout is now the same every
 # time, whatever is plugged in.
 tmux split-window -h -t "${SESSION}:rig" \
-  "${COMPOSE} exec monitor ./rig_key.py; echo; echo '[control pane exited -- press enter]'; read"
+  "${COMPOSE} exec -e RIG_START_ON_LAUNCH=${RIG_START_ON_LAUNCH:-1} -e RIG_REST_ON_QUIT=${RIG_REST_ON_QUIT:-0} monitor ./rig_key.py; echo; echo '[control pane exited -- press enter]'; read"
 echo "    control rig_key.py   (SPACE enable all | qwe/asd rty/fgh uio/jkl = +/- xyz"
 echo "                          arrows = base, z/x n/m grippers)"
 
-# A free shell last, so there is always somewhere to type arm_ctl.py or
-# drive_test.py without stealing a pane that is doing something.
-LAST_PANE=$(tmux list-panes -t "${SESSION}:rig" -F '#{pane_index}' | tail -1)
-tmux split-window -v -t "${SESSION}:rig.${LAST_PANE}" "${COMPOSE} exec monitor bash"
-echo "    shell   free terminal in monitor"
+# NO THIRD PANE. There used to be a free shell along the bottom, and it cost
+# the two panes that matter half their height -- the dashboard scrolled its own
+# top line away and the control pane's status line wrapped. A shell is one
+# keystroke away when it is actually wanted (Ctrl-b c for a new window, or
+# `make shell SVC=monitor` from anywhere), which is cheaper than paying for it
+# on every line of every session.
 
 # MOUSE MODE ON. This fixes two things that are the same bug wearing different
 # hats.
@@ -187,13 +206,13 @@ tmux set-hook -g session-closed[71] \
 # watcher dies with the terminal that ran `make tmux`, which is exactly when it
 # is most needed.
 setsid nohup bash -c "
-  while tmux has-session -t '${SESSION}' 2>/dev/null; do sleep 2; done
+  while tmux has-session -t '=${SESSION}' 2>/dev/null; do sleep 2; done
   sleep 4
   '${PWD}/rig-cleanup.sh'
 " >/dev/null 2>&1 &
 disown 2>/dev/null || true
 
-tmux select-layout -t "${SESSION}:rig" tiled
+tmux select-layout -t "${SESSION}:rig" even-horizontal
 tmux select-pane -t "${SESSION}:rig.0"
 
 echo

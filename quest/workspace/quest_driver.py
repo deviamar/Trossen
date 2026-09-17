@@ -24,6 +24,7 @@ Transport is a swappable backend (backends/), because the link to the headset is
 the least settled part of this rig.
 """
 import argparse
+import os
 import sys
 import time
 
@@ -31,7 +32,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import Image, Joy
+from sensor_msgs.msg import CameraInfo, Image, Joy
 from std_msgs.msg import Bool, String
 
 import backends
@@ -39,9 +40,10 @@ import quest_config as cfg
 
 
 class QuestDriver(Node):
-    def __init__(self, backend):
+    def __init__(self, backend, camera=None):
         super().__init__("quest_driver")
         self.backend = backend
+        self.camera = camera
         self.last_frame = 0.0
         self.was_connected = None
 
@@ -59,7 +61,22 @@ class QuestDriver(Node):
         # created rather than every backend carrying no-op stubs.
         self.can_return = hasattr(backend, "send_feedback")
         self.frame_id = 0
+        self._cam_frame_seen = -1
         self.stereo = {"left": None, "right": None}
+
+        # The viewer can be told the camera geometry (gvlink only). Subscribed
+        # separately from the images because CameraInfo is latched-ish and
+        # low-rate: one message per eye is enough, and waiting for it must not
+        # hold up the video path.
+        self.cam_info = {"left": None, "right": None}
+        self.cam_params_sent = False
+        if hasattr(backend, "set_camera_params"):
+            self.create_subscription(
+                CameraInfo, cfg.TOPIC_STEREO_LEFT_INFO,
+                lambda m: self._on_cam_info("left", m), 1)
+            self.create_subscription(
+                CameraInfo, cfg.TOPIC_STEREO_RIGHT_INFO,
+                lambda m: self._on_cam_info("right", m), 1)
 
         if self.can_return:
             self.create_subscription(String, cfg.TOPIC_FEEDBACK, self._on_feedback, 1)
@@ -100,6 +117,31 @@ class QuestDriver(Node):
                     np.asarray(d.get(f"{name}_rotation", [0.0, 0.0, 0.0, 1.0]), dtype=float))
         self.backend.send_feedback(fb)
 
+    def _on_cam_info(self, side, msg):
+        """Build the viewer's camera geometry once both eyes have reported.
+
+        Sent once. The intrinsics are scaled to the size the frames are
+        actually resized to before sending -- intrinsics are in pixels, so a
+        resize that the geometry does not follow puts a correctly rectified
+        image at the wrong scale, which reads as the world being the wrong
+        size rather than as a calibration error.
+        """
+        if self.cam_params_sent:
+            return
+        self.cam_info[side] = msg
+        if self.cam_info["left"] is None or self.cam_info["right"] is None:
+            return
+        try:
+            from backends.gvlink import zed_camera_params
+            wire = zed_camera_params(self.cam_info["left"], self.cam_info["right"],
+                                     cfg.STEREO_WIDTH, cfg.STEREO_HEIGHT)
+        except Exception as e:
+            self.get_logger().warn(f"camera geometry not usable yet: {e}",
+                                   throttle_duration_sec=10.0)
+            return
+        if self.backend.set_camera_params(wire):
+            self.cam_params_sent = True
+
     def _on_image(self, side, msg):
         """sensor_msgs/Image -> ndarray, without cv_bridge.
 
@@ -137,6 +179,27 @@ class QuestDriver(Node):
         self.stereo[side] = np.ascontiguousarray(img)
 
     def _send_stereo(self):
+        if self.camera is not None:
+            # A locally captured pair is already BGR and already the right
+            # size; the backend's ROS path expects RGB, so hand it over in the
+            # same convention the ROS images use and let the backend flip once.
+            # ONLY WHEN THE CAMERA HAS A NEW FRAME. This tick runs at
+            # PUBLISH_HZ (72) and the camera delivers 30, so handing over on
+            # every tick offered the same pair two or three times; the encoder
+            # mailbox is newest-only, so the duplicates were dropped -- 690 of
+            # them in an 18 s run, which is a scary-looking counter for work
+            # nobody asked for.
+            pair = self.camera.read()
+            if pair is None or self.camera.frames == self._cam_frame_seen:
+                return
+            self._cam_frame_seen = self.camera.frames
+            left, right = pair[0][:, :, ::-1], pair[1][:, :, ::-1]
+            if not self.cam_params_sent and hasattr(self.backend, "set_camera_params"):
+                if self.backend.set_camera_params(self.camera.camera_params()):
+                    self.cam_params_sent = True
+            self.backend.send_stereo(left, right, self.frame_id)
+            self.frame_id += 1
+            return
         left, right = self.stereo["left"], self.stereo["right"]
         if left is None and right is None:
             return
@@ -199,7 +262,14 @@ class QuestDriver(Node):
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--backend", default="udp", choices=["udp", "sim", "webrtc"])
+    ap.add_argument("--backend", default="gvlink",
+                    choices=["gvlink", "udp", "sim", "webrtc"])
+    # A side-by-side USB stereo camera plugged into this machine, captured here
+    # instead of arriving as ROS images. The ZED path (the middle arm's own
+    # camera, on the topic contract) is unaffected and still preferred; this is
+    # for a camera that has no ROS driver. Empty = ROS topics only.
+    ap.add_argument("--camera", default=os.environ.get("QUEST_CAMERA", ""),
+                    help="SBS stereo device, e.g. /dev/video4")
     ap.add_argument("--port", type=int, default=9871, help="udp backend port")
     ap.add_argument("--bind", default="0.0.0.0", help="udp backend bind address")
     ap.add_argument("--press", nargs="*", default=[],
@@ -210,14 +280,23 @@ def main():
                             press=args.press)
     backend.start()
 
+    camera = None
+    if args.camera:
+        from stereo_cam import StereoCamera
+        camera = StereoCamera(args.camera,
+                              out_size=(cfg.STEREO_WIDTH, cfg.STEREO_HEIGHT))
+        camera.open().start()
+
     rclpy.init()
-    node = QuestDriver(backend)
+    node = QuestDriver(backend, camera)
     print(f"  quest driver up on {cfg.NS}, backend={args.backend}. Ctrl-C to stop.")
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         print("\n  stopping.")
     finally:
+        if camera is not None:
+            camera.close()
         backend.stop()
         node.destroy_node()
         if rclpy.ok():

@@ -11,3 +11,5 @@ google-cloud-firestore   # signalling: the offer/answer rendezvous
 numpy
 scipy                    # rotations in transform_utils / teleop_map
 numba                    # @jit on the coordinate conversions
+msgpack                  # gvlink control channel (av-aloha-unity branch v2)
+psutil                   # gvlink rate control reads CPU load to pace the encoder

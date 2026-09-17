@@ -98,12 +98,35 @@ class ArmCtl(Node):
         m.data = name
         self.pub_save[ns].publish(m)
 
-    def enable(self, ns, on):
+    def enable(self, ns, on, confirm_s=1.5):
+        """Publish enable and, for on=True, WAIT until the agent says it took.
+
+        enable and cmd_pose_name are different topics and nothing orders
+        them: the left arm logged "pose 'start' ignored -- not enabled"
+        0.3 ms before "armed" and sat still while the right arm moved. The
+        agents publish <ns>/active at 20 Hz, so a fresh True is the proof the
+        enable has landed. Returns True once confirmed (or for on=False).
+        Same fix rig_key.send_pose_all() already carries.
+        """
         m = Bool()
         m.data = bool(on)
+        if on:
+            self.active[ns] = False      # want a FRESH True, not a stale one
         for _ in range(3):          # depth-1 topic; a dropped enable is a stuck arm
             self.pub_enable[ns].publish(m)
             rclpy.spin_once(self, timeout_sec=0.02)
+        if not on:
+            return True
+        end = time.monotonic() + confirm_s
+        while time.monotonic() < end and not self.active.get(ns):
+            rclpy.spin_once(self, timeout_sec=0.02)
+            if not self.active.get(ns):
+                self.pub_enable[ns].publish(m)
+        ok = bool(self.active.get(ns))
+        if not ok:
+            print(f"  {ns}: enable NOT confirmed within {confirm_s:.1f}s -- "
+                  "not sending the move (check its log)", file=sys.stderr)
+        return ok
 
 
 def show_state(node):
@@ -280,7 +303,8 @@ def main():
             print(f"\n  MOVING {len(ok)} ARM(S) IN 2 SECONDS -- Ctrl-C to abort.")
             time.sleep(2.0)
             for ns in ok:
-                node.enable(ns, True)
+                if not node.enable(ns, True):
+                    continue
                 m = String()
                 m.data = args.name
                 node.pub_name[ns].publish(m)
@@ -333,7 +357,8 @@ def main():
         print("\n  MOVING IN 2 SECONDS -- Ctrl-C to abort.")
         time.sleep(2.0)
 
-        node.enable(ns, True)
+        if not node.enable(ns, True):
+            return 4
         if args.cmd == "gripper":
             m = Float32()
             m.data = float(args.value)

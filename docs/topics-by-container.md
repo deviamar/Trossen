@@ -124,8 +124,9 @@ That direction is deliberate — input devices adapt to robots, not the reverse.
 |---|---|---|
 | SUB | all `/quest/*` above | |
 | SUB | `<arm>/ee_pose` for all three arms | `geometry_msgs/PoseStamped` |
-| PUB | `<arm>/cmd_pose`, `<arm>/cmd_gripper`, `<arm>/enable` | |
+| PUB | `<arm>/cmd_pose`, `<arm>/cmd_gripper`, `<arm>/cmd_grip_force`, `<arm>/enable` | |
 | PUB | `/slate/cmd_vel_teleop` | `geometry_msgs/Twist` |
+| PUB | `/slate/lift/cmd_velocity` | `std_msgs/Float32` (right stick; simulated lift until the hardware is wired) |
 | PUB | `/quest/feedback` | `std_msgs/String` |
 
 **Run only one of `quest_teleop.py` and `keyboard_teleop.py` at a time.** Two
@@ -139,7 +140,8 @@ sources publishing the same command topics is a fight neither wins.
 | PUB | `/slate/cmd_vel_teleop` | `geometry_msgs/Twist` | `drive_test.py` |
 | PUB | `<arm>/cmd_pose_name`, `<arm>/cmd_joints`, `<arm>/cmd_gripper`, `<arm>/enable` | | `arm_ctl.py` |
 | SUB | `<arm>/ee_pose`, `<arm>/joint_states`, `<arm>/pose_names`, `<arm>/active` | | `arm_ctl.py` |
-| PUB | `<arm>/cmd_pose`, `<arm>/cmd_gripper`, `<arm>/enable` for **all three arms** | | `rig_key.py` |
+| PUB | `<arm>/cmd_pose`, `<arm>/cmd_joints`, `<arm>/cmd_pose_name`, `<arm>/save_pose`, `<arm>/cmd_grip_force`, `<arm>/enable`, `<arm>/zero`, `<arm>/reset` for **all three arms** | | `rig_key.py` |
+| PUB | `<arm>/cmd_pose`, `<arm>/enable` | | `check_frame.py` (mount-frame measurement; one arm, `--execute` only) |
 | PUB | `/slate/cmd_vel_teleop`, `/slate/lift/cmd_velocity` | `Twist`, `Float32` | `rig_key.py` |
 | SRV | `/slate/set_motor_torque_status` | `std_srvs/SetBool` | `rig_key.py` |
 | SUB | `<arm>/ee_pose` for all three arms | `geometry_msgs/PoseStamped` | `rig_key.py` |

@@ -208,8 +208,11 @@ one code path.
 | Topic | Type | Meaning |
 |---|---|---|
 | `/middle/cmd_pose` | `geometry_msgs/PoseStamped` | Absolute target pose of the camera link |
+| `/middle/cmd_pose_name` | `std_msgs/String` | A saved pose by name — ramped in joint space at `MIDDLE_POSE_SPEED` |
+| `/middle/save_pose` | `std_msgs/String` | Record where the arm is now, under this name. Does not require `enable` |
 | `/middle/enable` | `std_msgs/Bool` | Follow, or hold position |
 | `/middle/ee_pose` | `geometry_msgs/PoseStamped` | Measured camera pose, from FK |
+| `/middle/pose_names` | `std_msgs/String` | JSON list of poses this arm can be sent to |
 | `/middle/active` | `std_msgs/Bool` | Agent is accepting commands |
 
 **No `cmd_gripper`.** The ZED sits where the gripper would be.

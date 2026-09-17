@@ -17,8 +17,8 @@
 # does not answer.
 port: /dev/ttyDXL
 
-joint_order: [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate]
-sleep_positions: [0, -1.80, 1.55, 0, 0.8, 0]
+joint_order: [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate, camera_yaw]
+sleep_positions: [0, -1.85, 1.55, 0, 0.3, 0, 0]
 
 joint_state_publisher:
   update_rate: 100
@@ -26,7 +26,7 @@ joint_state_publisher:
   topic_name: joint_states
 
 groups:
-  arm: [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate]
+  arm: [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate, camera_yaw]
 
 # No `grippers:` block -- there is no gripper on this arm.
 
@@ -121,4 +121,21 @@ motors:
     Max_Position_Limit: 4095
     Secondary_ID: 255
 
-  # ID 9 (gripper) intentionally absent -- motor removed, camera in its place.
+  # THE CAMERA'S YAW MOTOR. This arm has SEVEN joints: the slot the vendor
+  # uses for a gripper carries a second camera motor, exactly as giava's
+  # wx250s_7dof config has it. It was missing from this file, so the driver
+  # never enumerated it and nothing could command it -- which is why turning
+  # your head barely turned the camera: only camera_roll (ID 8) moved.
+  #
+  # It shipped at ID 1 / 57600 baud (factory defaults) and was invisible to a
+  # driver scanning at 1 Mbps. tools/setid.py wrote ID 9 and 1 Mbps into its
+  # EEPROM; run that again with --undo to put it back.
+  camera_yaw:
+    ID: 9
+    Baud_Rate: 3
+    Return_Delay_Time: 0
+    Drive_Mode: 0
+    Velocity_Limit: 131
+    Min_Position_Limit: 0
+    Max_Position_Limit: 4095
+    Secondary_ID: 255

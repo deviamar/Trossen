@@ -243,13 +243,30 @@ WORKDIR ${ROS_WS}
 # context, so a rebuild is reproducible against a pinned commit rather than
 # whatever PyPI holds that day.
 COPY --chown=${USER_UID}:${USER_GID} third_party/pyroki /opt/pyroki
-RUN pip3 install --no-cache-dir \
+# TOOLING FIRST. Ubuntu 22.04's stock pip/setuptools predate pyproject-only
+# packages like pyroki: old setuptools cannot read its metadata, so the wheel
+# builds as UNKNOWN-0.0.0, installs NOTHING importable, and the docker build
+# still exits 0 -- head_agent then dies at `import pyroki` on first use. The
+# upgrade makes that install real instead of silently empty.
+#
+# jaxls FROM GIT, exactly as pyroki's own pyproject pins it. The name `jaxls`
+# on PyPI is a stale 2024 snapshot that still reads jax.core.JaxprEqn, which
+# jax 0.6 removed -- so the PyPI pairing imports jax fine and then dies inside
+# `import jaxls`, taking middle_ik and head_agent with it at startup.
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip3 install --no-cache-dir \
     "jax[cpu]" \
     jaxlie \
-    jaxls \
+    "jaxls @ git+https://github.com/brentyi/jaxls.git" \
     jax-dataclasses \
     yourdfpy \
-    && pip3 install --no-cache-dir --no-deps /opt/pyroki
+    jaxtyping \
+    loguru \
+    tyro \
+    robot_descriptions \
+    viser \
+    && pip3 install --no-cache-dir --no-deps /opt/pyroki \
+    && python3 -c "import pyroki, jaxls"
 
 ENV BASH_ENV=/usr/local/bin/ros-env.sh
 

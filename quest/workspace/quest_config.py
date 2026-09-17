@@ -66,6 +66,19 @@ TOPIC_STEREO_RIGHT = os.environ.get(
 STEREO_WIDTH = int(os.environ.get("QUEST_STEREO_WIDTH", 640))
 STEREO_HEIGHT = int(os.environ.get("QUEST_STEREO_HEIGHT", 480))
 
+# The camera's own geometry, published by the ZED wrapper beside each image
+# stream. The v2 Unity viewer places each eye from these measured intrinsics
+# instead of a field-of-view slider, so they are worth carrying: CameraInfo.P
+# is already the RECTIFIED projection, which is exactly the form the viewer
+# wants (backends/gvlink.zed_camera_params).
+TOPIC_STEREO_LEFT_INFO = os.environ.get(
+    "QUEST_STEREO_LEFT_INFO", TOPIC_STEREO_LEFT.rsplit("/", 1)[0] + "/camera_info")
+TOPIC_STEREO_RIGHT_INFO = os.environ.get(
+    "QUEST_STEREO_RIGHT_INFO", TOPIC_STEREO_RIGHT.rsplit("/", 1)[0] + "/camera_info")
+
+# Shown in the headset's robot picker, and how the beacon identifies this rig.
+ROBOT_NAME = os.environ.get("GIAVA_ROBOT_NAME") or os.environ.get("QUEST_ROBOT_NAME", "trossen")
+
 # ---------------------------------------------------------------------------
 # Joy layout. Same for both hands; see docs/topic-contract.md.
 AXIS_STICK_X = 0
@@ -90,16 +103,22 @@ PUBLISH_HZ = float(os.environ.get("QUEST_HZ", 72.0))
 STALE_S = 0.35
 
 # ---------------------------------------------------------------------------
-# Base driving. Thumbstick -> Twist.
+# Base driving and the lift. One stick each.
 #
-# The mapping the rig was specified with: LEFT stick forward drives the base
-# forward, RIGHT stick forward rotates it clockwise. Note that "right stick
-# forward = turn" is unusual -- most rigs put turning on the right stick's X
-# axis -- so if it feels wrong in the hand, set QUEST_TURN_AXIS=x and it moves
-# to left/right without touching any code.
+# LEFT stick owns the base: forward/back drives, left/right rotates -- the
+# whole 2D plane on one thumb, the way a differential drive is normally driven.
+# RIGHT stick forward/back is the scissor lift's z velocity. The lift hardware
+# is not connected yet; the topic it publishes to (/slate/lift/cmd_velocity)
+# is currently served by the SIMULATED lift_agent, so the stick moves a number,
+# not a machine, until the lift is wired in -- and nothing here changes when
+# it is.
 BASE_MAX_VEL_X = float(os.environ.get("QUEST_BASE_MAX_X", 0.25))   # m/s
 BASE_MAX_VEL_Z = float(os.environ.get("QUEST_BASE_MAX_Z", 0.6))    # rad/s
-TURN_AXIS = os.environ.get("QUEST_TURN_AXIS", "y").lower()         # "y" or "x"
+# Stick pushed LEFT should turn the rig LEFT (+yaw in REP-103). If the app
+# reports stick-left as positive x that needs a sign flip; -1 here does it
+# without touching code.
+TURN_SIGN = float(os.environ.get("QUEST_TURN_SIGN", -1.0))
+LIFT_MAX_VEL = float(os.environ.get("QUEST_LIFT_MAX_VEL", 0.05))   # m/s
 
 # Sticks do not rest at exactly zero, and a base that creeps while nobody is
 # touching it is both alarming and hard to diagnose.
@@ -115,22 +134,96 @@ STICK_DEADZONE = 0.12
 # Hold-to-engage, not toggle. Releasing the button must stop the arm following
 # you -- a toggle leaves an armed robot behind when you put the controller down,
 # and the failure is silent until you move.
-ARM_SCALE = float(os.environ.get("QUEST_ARM_SCALE", 1.0))
 ARM_NS_LEFT = os.environ.get("QUEST_ARM_NS_LEFT", "/left_arm")
 ARM_NS_RIGHT = os.environ.get("QUEST_ARM_NS_RIGHT", "/right_arm")
 BASE_NS = os.environ.get("QUEST_BASE_NS", "/slate")
+
+# Hand motion -> EE motion amplification. giava ran 1.35 for their workspace;
+# 1.0 is the safe default until this rig's own value is dialled in by feel.
+POSITION_SCALE = float(os.environ.get("QUEST_POS_SCALE", 1.0))
+
+# The camera arm is scaled separately and LOWER than the hands (giava ran 0.6):
+# a head sweeps further than a hand does for the same intent, and the operator
+# is looking through this one, so amplifying it makes the view swim. Nudged up
+# from 0.6 because it barely moved in practice -- small steps here, since this
+# is the arm whose motion you feel as the world moving rather than as a tool.
+CAM_POSITION_SCALE = float(os.environ.get("QUEST_CAM_POS_SCALE", 0.68))
+
+# How far the end effector TURNS per unit of hand/head rotation. Separate from
+# the position scales above because the two do not want the same number: a hand
+# holding a gripper wants 1:1, while the camera arm is amplified so the view can
+# look further than a comfortable neck turn.
+ROTATION_SCALE = float(os.environ.get("QUEST_ROT_SCALE", 1.0))
+CAM_ROTATION_SCALE = float(os.environ.get("QUEST_CAM_ROT_SCALE", 1.5))
+
+# Operator-to-rig yaw, degrees, for the hands and the head respectively. The
+# SESSION yaw (which way the app's arbitrary world points) is measured from
+# your gaze at engage time -- see teleop_map.session_yaw_remap -- so all this
+# has to say is how you STAND relative to the rig: 0 when you face the same
+# way as the rig's +x (standing behind it), 180 if you face it head-on.
+ARM_REMAP_YAW_DEG = float(os.environ.get("QUEST_ARM_REMAP_YAW_DEG", 0.0))
+CAM_REMAP_YAW_DEG = float(os.environ.get("QUEST_CAM_REMAP_YAW_DEG", 0.0))
 
 # The active-vision arm. Driven by HEAD pose, not a controller, and engaged
 # whenever either hand is engaged -- you want the camera to follow you while
 # your hands are busy, and to stop when you let go of both.
 MIDDLE_NS = os.environ.get("QUEST_MIDDLE_NS", "/middle")
 
-# Trigger 0..1 -> gripper opening in metres, open at rest and closed when
-# squeezed. GRIPPER_OPEN matches the controller's enforced position limit; the
-# mechanism physically reaches ~0.044 but commanding that trips a limit error.
-GRIPPER_OPEN = 0.04
+# Trigger -> gripper. Released, the fingers are STAGED with a position command
+# (cmd_gripper, metres). Squeezed past the deadzone, the trigger commands a
+# closing FORCE (cmd_grip_force, newtons, negative = close), analog between the
+# two bounds below.
+#
+# Force, not position, for the squeeze -- this is the WXAI equivalent of the
+# DYNAMIXEL current_based_position + Current_Limit register trick the older
+# rigs needed. Commanding a position onto an object the fingers cannot pass
+# through gives the controller a growing following error, which it calls a
+# fault and drops the arm to idle mid-grasp; commanding a force stops the
+# finger wherever the object is, squeezing exactly as hard as asked.
+GRIPPER_OPEN = 0.04             # metres; the controller's enforced limit
 GRIPPER_CLOSED = 0.0
 TRIGGER_DEADZONE = 0.05
+GRASP_FORCE_MIN_N = float(os.environ.get("QUEST_GRASP_MIN_N", 5.0))
+GRASP_FORCE_MAX_N = float(os.environ.get("QUEST_GRASP_MAX_N", 40.0))
+# Releasing the trigger pushes the fingers APART with a force, it does not
+# command an opening. Both directions are then the same control mode, so the
+# gripper never changes mode mid-session -- a mode write drops the arm's
+# control loop for an instant, which is felt as the whole arm twitching, and
+# commanding the open POSITION drove the fingers into their mechanical stop and
+# faulted the entire arm with "Joint 6 position limit exceeded".
+OPEN_FORCE_N = float(os.environ.get("QUEST_OPEN_N", 15.0))
+
+# ---------------------------------------------------------------------------
+# One button parks the whole rig: every arm to its saved 'rest' pose, in joint
+# space, by name. "right" = B, "left" = Y, "off" = no such button.
+#
+# Ignored while an arm is engaged, which is the safety: you cannot fire it
+# mid-motion with a thumb, only after letting go -- and "let go, then park" is
+# the order you would do it in anyway.
+REST_BUTTON = os.environ.get("QUEST_REST_BUTTON", "right").strip().lower()
+REST_POSE = os.environ.get("QUEST_REST_POSE", "rest")
+
+# ...and then ends the session, so one button is the whole shutdown: park the
+# rig, release it, exit. Set QUEST_REST_QUITS=false to have the button park the
+# arms and leave teleop running.
+#
+# THE WAIT IS NOT OPTIONAL. A named move is executed BY THE AGENT and only
+# while the arm stays enabled -- quitting immediately would publish enable=false
+# mid-move and drop each arm wherever it had got to, which is the opposite of
+# parking it. So the button sends the pose, keeps the link alive long enough
+# for the slowest arm to finish, and only then releases.
+# HELD, not tapped. B and Y both open the Unity app's own menu, so a single tap
+# is something you do by accident several times a session -- and the first time
+# it happened it parked all three arms and ended teleop, which read as the link
+# dying. A double press was the first fix and it is the wrong shape for this
+# button: the app opens its menu on the first press, so the second one is aimed
+# at a screen that just appeared, and whether it registers depends on what the
+# menu did with it. A HOLD has no such conflict -- the menu opens, you keep
+# holding, and the rig parks. Set 0 to fire on release of any press.
+REST_HOLD_S = float(os.environ.get("QUEST_REST_HOLD_S", 1.5))
+
+REST_QUITS = os.environ.get("QUEST_REST_QUITS", "true").strip().lower() == "true"
+REST_QUIT_WAIT_S = float(os.environ.get("QUEST_REST_QUIT_WAIT", 12.0))
 
 
 def unity_to_ros_position(x, y, z):

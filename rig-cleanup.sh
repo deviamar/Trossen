@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ "${FORCE}" = false ] && tmux has-session -t "${SESSION}" 2>/dev/null; then
+if [ "${FORCE}" = false ] && tmux has-session -t "=${SESSION}" 2>/dev/null; then
   echo "  '${SESSION}' is still running -- nothing to clean up."
   echo "  (kill it first, or pass --force)"
   exit 0
@@ -57,28 +57,18 @@ if ! ${COMPOSE} ps --services --filter status=running 2>/dev/null | grep -qx mon
   exit 0
 fi
 
-# Matched by reading /proc/<pid>/cmdline rather than with `pkill -f`. pkill
-# matches the FULL command line of every process, including the shell running
-# this very script -- which contains these patterns as text, so pkill kills
-# itself partway through. That is not hypothetical; it happened.
-read -r -d '' FINDER <<'INNER'
-for p in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
-  [ -r "/proc/$p/cmdline" ] || continue
-  # What the process IS, not what its command line mentions. Matching the
-  # cmdline alone makes this script find ITSELF: the shell running this finder
-  # has these very patterns in its argv, so it matched, and the cleanup then
-  # tried to kill the process doing the cleaning. comm is the executable name,
-  # so a bash wrapper is excluded no matter what text it carries.
-  comm=$(cat "/proc/$p/comm" 2>/dev/null)
-  case "$comm" in python*) ;; *) continue ;; esac
-  c=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)
-  case "$c" in
-    *rig_key.py*|*watch.py*|*teleop_keyboard.py*) echo "$p|$c" ;;
-  esac
-done
-INNER
-
-found=$(${COMPOSE} exec -T monitor bash -c "${FINDER}" 2>/dev/null)
+# WHAT COUNTS AS A CONTROL PROCESS IS DEFINED IN ONE PLACE:
+# monitor/workspace/control_lock.py. This script used to keep its own copy of
+# the list, and the two drifted the moment rig_debug.py was added -- cleanup
+# never reaped it and `make orphans` never listed it, so the debug tool refused
+# to start because of a process this script insisted did not exist.
+#
+# It also reads /proc rather than using `pkill -f`, because pkill matches the
+# full command line of EVERY process including the shell running this script,
+# which contains these patterns as text. That is not hypothetical: it killed
+# itself partway through.
+found=$(${COMPOSE} exec -T monitor bash -c \
+  'cd /home/robot/workspace && python3 control_lock.py --list' 2>/dev/null)
 
 if [ -z "${found}" ]; then
   echo "  no orphaned control processes in monitor."

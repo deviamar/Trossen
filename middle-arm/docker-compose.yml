@@ -74,6 +74,13 @@ services:
       - ROBOT_MODEL=wx250s
       - ROBOT_NAME=middle           # ROS namespace; matches AV-ALOHA's "middle" arm
       - DXL_PORT=/dev/ttyDXL        # created by the host udev rule, see host-setup/
+      # Where the ZED's optical centre sits relative to the flange
+      # (middle/ee_arm_link), metres / radians. prep_urdf.py grafts camera_link
+      # onto the URDF with this offset so head_agent's pose targets mean the
+      # CAMERA. Zero is usable (targets mean the flange) but wrong by the mount
+      # geometry -- measure from CAD and fill these in.
+      - MIDDLE_ZED_XYZ=0 0 0
+      - MIDDLE_ZED_RPY=0 0 0
       # Deliberately NOT 0. Zero is the ROS 2 default, so every ROS 2 machine on
       # the same network joins that graph -- on the lab wifi this host picked up
       # a separate glove/IMU teleop rig (/glove/*, /wrist_imu/*, /right_hand)

@@ -32,6 +32,8 @@ stall in the middle of a live session.
 """
 from __future__ import annotations
 
+import os
+
 import jax
 import jax.numpy as jnp
 import jax_dataclasses as jdc
@@ -42,12 +44,59 @@ import pyroki as pk
 
 EPS = 1e-6
 
+# ORIENTATION OUTWEIGHS POSITION ON THIS ARM, which is the opposite of a
+# manipulator and deliberate: it carries a camera, and where the camera LOOKS
+# is the thing the operator is steering. These are giava's own middle-arm
+# weights (pos 10 / ori 25); they were 40 / 0.25 here, inherited from a gripper
+# arm, and that ratio made the solver almost indifferent to orientation.
+#
+# It showed up the moment the seventh joint arrived. camera_yaw is the last
+# joint and the camera sits on its axis, so yaw changes ONLY orientation -- at
+# an orientation weight of 0.25 against a position weight of 40 the solver had
+# no reason to turn it at all, and head rotation moved the camera barely or not
+# at all while translation worked fine.
+POS_WEIGHT = float(os.environ.get("MIDDLE_POS_WEIGHT", 10.0))
+ORI_WEIGHT = float(os.environ.get("MIDDLE_ORI_WEIGHT", 25.0))
+
+# THE ARM IS REDUNDANT NOW, and that has to be resolved deliberately.
+#
+# Seven joints for a six-DOF target leaves a one-dimensional family of
+# configurations that all put the camera in exactly the same place. Nothing in
+# a pose cost distinguishes them, so the solver is free to slide along that
+# family -- which is what "the motion went wild" is: joints travelling a long
+# way to produce a camera pose a small motion would also have produced.
+#
+# Two terms choose for it, and their sizes are RELATIVE to the pose weights
+# above, which is why raising ORI_WEIGHT from 0.25 to 25 without touching these
+# made it worse rather than better:
+#
+#   DQ_WEIGHT      penalises moving at all since the last command. Keeps the
+#                  solution continuous in time -- the anti-elbow-flip term.
+#   CENTER_WEIGHT  pulls the whole arm toward a NEUTRAL POSTURE (the saved
+#                  'start' pose by default). This is the one that actually
+#                  resolves redundancy: of all the configurations that aim the
+#                  camera correctly, prefer the one that looks like the pose
+#                  you chose. giava uses the same idea (their centering term).
+DQ_WEIGHT = float(os.environ.get("MIDDLE_DQ_WEIGHT", 2.0))
+CENTER_WEIGHT = float(os.environ.get("MIDDLE_CENTER_WEIGHT", 1.0))
+
 
 @jaxls.Cost.create_factory
 def previous_configuration_residual_scaled(vals, joint_var, prev_q, smoothness_scales):
     """Penalise change from the previously commanded configuration."""
     q = vals[joint_var]
     return smoothness_scales * (q - prev_q)
+
+
+@jaxls.Cost.create_factory
+def centering_residual(vals, joint_var, q_center, weight):
+    """Pull toward a neutral posture -- how the extra joint is spent.
+
+    Applies to every joint, but it only CHANGES anything in the directions the
+    pose cost does not constrain: with six constraints on seven joints there is
+    one such direction, and without this term the solver wanders along it.
+    """
+    return weight * (vals[joint_var] - q_center)
 
 
 def make_middle_arm_ik_solver(robot: pk.Robot, target_link_name: str):
@@ -66,7 +115,7 @@ def make_middle_arm_ik_solver(robot: pk.Robot, target_link_name: str):
     @jdc.jit
     def _solve_jax(prev_q, target_position, target_wxyz, dt,
                    joint_velocity_limits, position_weight, orientation_weight,
-                   active, dq_weight):
+                   active, dq_weight, q_center, center_weight):
         joint_var = robot.joint_var_cls(0)
         costs = [
             pk.costs.pose_cost_analytic_jac(
@@ -93,6 +142,11 @@ def make_middle_arm_ik_solver(robot: pk.Robot, target_link_name: str):
             )
         )
 
+        costs.append(
+            centering_residual(
+                joint_var=joint_var, q_center=q_center, weight=center_weight)
+        )
+
         problem = jaxls.LeastSquaresProblem(costs=costs, variables=[joint_var])
         solution = problem.analyze().solve(
             verbose=False,
@@ -110,12 +164,17 @@ def make_middle_arm_ik_solver(robot: pk.Robot, target_link_name: str):
         return arr
 
     def solve(target_position, target_wxyz, prev_q, dt, joint_velocity_limits,
-              position_weight=40.0, orientation_weight=0.25, active=1.0,
-              dq_weight=0.18, block_until_ready=True):
+              position_weight=POS_WEIGHT, orientation_weight=ORI_WEIGHT, active=1.0,
+              dq_weight=DQ_WEIGHT, q_center=None, center_weight=CENTER_WEIGHT,
+              block_until_ready=True):
         target_position = _checked("target_position", target_position, (3,))
         target_wxyz = _checked("target_wxyz", target_wxyz, (4,))
         prev_q = np.asarray(prev_q, dtype=np.float32)
         vel = np.asarray(joint_velocity_limits, dtype=np.float32)
+        # No neutral posture given: centre on where the arm already is, which
+        # makes the term a no-op rather than a pull toward an arbitrary zero.
+        qc = (np.asarray(prev_q, dtype=np.float32) if q_center is None
+              else np.asarray(q_center, dtype=np.float32))
 
         q = _solve_jax(
             jnp.asarray(prev_q), jnp.asarray(target_position),
@@ -123,6 +182,7 @@ def make_middle_arm_ik_solver(robot: pk.Robot, target_link_name: str):
             jnp.asarray(vel), jnp.asarray(np.float32(position_weight)),
             jnp.asarray(np.float32(orientation_weight)),
             jnp.asarray(np.float32(active)), jnp.asarray(np.float32(dq_weight)),
+            jnp.asarray(qc), jnp.asarray(np.float32(center_weight)),
         )
         if block_until_ready:
             q = jax.block_until_ready(q)

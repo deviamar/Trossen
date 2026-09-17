@@ -191,15 +191,19 @@ docker compose exec quest ./launch-quest.sh --backend sim          # start here
 ```
 
 Then hold **A** for the right arm, **X** for the left, either to move the camera
-arm with your head, triggers for the grippers, thumbsticks to drive. Swap to
-`--backend webrtc` once the chain looks right on `sim`. Full controls and
-bring-up order in [quest/README.md](quest/README.md).
+arm with your head, triggers squeeze the grippers (analog closing force), the
+left stick drives and turns the base, and the right stick runs the scissor
+lift's z (simulated until the lift is wired). Swap to `--backend webrtc` once
+the chain looks right on `sim`. Full controls and bring-up order in
+[quest/README.md](quest/README.md).
 
 The camera arm needs a URDF for its solver, generated from the same xacro the
-driver uses:
+driver uses and then prepared -- `prep_urdf.py` strips the gripper joint the
+vendor xacro emits for a servo this arm does not have, and grafts `camera_link`
+on with the `MIDDLE_ZED_*` offsets (start.sh does both automatically):
 
 ```bash
-docker compose exec middle-arm bash -lc './launch-arm.sh --dump-urdf' > /tmp/wx250s.urdf
+docker compose exec middle-arm bash -lc './launch-arm.sh --dump-urdf | ./prep_urdf.py' > /tmp/wx250s.urdf
 ```
 
 `arm_agent.py` holds an arm's single SDK connection, so `pose.py`,

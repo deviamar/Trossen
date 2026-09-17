@@ -35,17 +35,24 @@ ROBOT_MODEL = "wx250s"
 
 # Order matches `joint_order` in config/wx250s_nogripper.yaml, which is the
 # order xs_sdk publishes and expects in a JointGroupCommand.
+# SEVEN joints, not six. The wx250s frame carries TWO camera motors where a
+# gripper would be: camera_roll (ID 8, the arm's own last axis) and camera_yaw
+# (ID 9). The second one was missing from every config here, so it was never
+# enumerated and never commanded -- head rotation moved the camera barely at
+# all because only the roll axis was responding. Names match giava's
+# wx250s_7dof description, which is the same hardware.
 JOINT_NAMES = [
     "waist",
     "shoulder",
     "elbow",
     "forearm_roll",
     "wrist_angle",
-    "wrist_rotate",   # == camera pan, see CAMERA_PAN_JOINT
+    "wrist_rotate",   # ID 8, the arm's own last axis (giava calls it camera_roll)
+    "camera_yaw",     # ID 9, the camera's yaw motor
 ]
 
 # The camera's aiming DOF. Named separately so intent survives in calling code.
-CAMERA_PAN_JOINT = "wrist_rotate"
+CAMERA_PAN_JOINT = "camera_yaw"
 CAMERA_PAN_INDEX = JOINT_NAMES.index(CAMERA_PAN_JOINT)
 
 ARM_CONFIG = {
@@ -53,7 +60,7 @@ ARM_CONFIG = {
         "robot_name": ROBOT_NAME,
         "robot_model": ROBOT_MODEL,
         "has_gripper": False,
-        "num_joints": 6,
+        "num_joints": 7,
         "joint_names": JOINT_NAMES,
     },
 }
@@ -69,6 +76,8 @@ JOINT_LIMITS = {
     "forearm_roll": (-3.141583,  3.141583),
     "wrist_angle":  (-1.745329,  2.146755),
     "wrist_rotate": (-3.141583,  3.141583),
+    # From giava's wx250s_7dof URDF, which describes this exact wrist.
+    "camera_yaw":   (-3.100000,  3.070000),
 }
 
 # ---------------------------------------------------------------------------
@@ -77,15 +86,15 @@ JOINT_LIMITS = {
 # HIGH / FORWARD / LOW carry over from the original unchanged -- all three are
 # inside this arm's limits, verified against JOINT_LIMITS above.
 # ---------------------------------------------------------------------------
-HIGH = np.array([0.11, -0.48, 0.33, -0.03, 1.35, 0.05], dtype=float)
-LOW = np.array([0.02, 0.037, 0.598, -0.143, 0.986, 0.038], dtype=float)
-FORWARD = np.array([0.0, -1.27, 0.99, 0.0, 0.35, 0.0], dtype=float)
+HIGH = np.array([0.11, -0.48, 0.33, -0.03, 1.35, 0.05, 0.0], dtype=float)
+LOW = np.array([0.02, 0.037, 0.598, -0.143, 0.986, 0.038, 0.0], dtype=float)
+FORWARD = np.array([0.0, -1.27, 0.99, 0.0, 0.35, 0.0, 0.0], dtype=float)
 
 # Replaces the upstream REST = [0.0, -1.9, 1.635, 0.0, 0.7, 0.0], which asks for
 # shoulder -1.900 (limit -1.885) and elbow 1.635 (limit 1.606) -- both past the
 # stop. These values are `sleep_positions` from wx250s_nogripper.yaml, i.e. the
 # vendor's own folded pose for this exact arm, and sit comfortably in range.
-REST = np.array([0.0, -1.80, 1.55, 0.0, 0.8, 0.0], dtype=float)
+REST = np.array([0.0, -1.80, 1.55, 0.0, 0.8, 0.0, 0.0], dtype=float)
 
 DEFAULT_RESET_POSE = "forward"
 

@@ -7,12 +7,22 @@
 # `arm` behavior is unchanged and is what makes the arm hold station on launch:
 # position mode + torque_enable seeds each goal from the present encoder reading,
 # so xs_sdk locks the arm wherever it physically is and commands no motion.
+# PROFILE IS VELOCITY, NOT TIME. With profile_type time, every goal is reached
+# in profile_velocity MILLISECONDS regardless of distance -- so a stream of
+# 50 Hz steps gets re-timed per step and motion speed depends on step spacing,
+# the same artifact the WXAI arms had under goal_time pacing. With velocity,
+# the numbers are true speed caps in register units and a streamed goal is
+# followed smoothly underneath them:
+#   profile_velocity     131 x 0.229 rev/min  ~= 30 rpm ~= 3.1 rad/s
+#   profile_acceleration  25 x 214.577 rev/min^2
+# (the classic ALOHA streaming values). head_agent's own 1.5 rad/s software
+# clamp stays well below the servo cap, which is how it should sit.
 groups:
   arm:
     operating_mode: position
-    profile_type: time
-    profile_velocity: 2000
-    profile_acceleration: 300
+    profile_type: velocity
+    profile_velocity: 131
+    profile_acceleration: 25
     torque_enable: true
 
 # Left empty on purpose, mirroring how the stock configs express an empty

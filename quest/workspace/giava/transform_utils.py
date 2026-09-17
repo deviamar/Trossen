@@ -99,13 +99,7 @@ def quat2axisangle(quat):
         quat[3] = -1.0
 
     den = np.sqrt(1.0 - quat[3] * quat[3])
-    # PORTING NOTE: upstream is `np.isclose(den, 0.0)`. numba cannot compile
-    # np.isclose in nopython mode, and this function carries an explicit
-    # signature so it compiles at IMPORT -- meaning the whole module fails to
-    # load, not just this call. den is a square root and so non-negative, and
-    # np.isclose(x, 0.0) with default tolerances is exactly `x <= atol`, so this
-    # is numerically identical rather than merely close.
-    if den <= 1e-8:
+    if np.isclose(den, 0.0):
         # This is (close to) a zero degree rotation, immediately return
         return np.zeros(3)
 
@@ -127,9 +121,7 @@ def axisangle2quat(vec):
     angle = np.linalg.norm(vec)
 
     # handle zero-rotation case
-    # PORTING NOTE: was np.isclose(angle, 0.0) -- see quat2axisangle above for
-    # why numba forces this. angle is a norm, so non-negative.
-    if angle <= 1e-8:
+    if np.isclose(angle, 0.0):
         return np.array([0.0, 0.0, 0.0, 1.0])
 
     # make sure that axis is a unit vector
@@ -171,6 +163,45 @@ def xyzw_to_wxyz(quat):
 @jit(nopython=True, fastmath=True, cache=True)
 def wxyz_to_xyzw(quat):
     return np.array([quat[1], quat[2], quat[3], quat[0]])
+
+## Session-yaw calibration (2026-08, see TELEOP_MATH.md).  The headset app's
+## world frame -- after headset_utils' Unity->world ingestion conversion -- is
+## z-up but with an ARBITRARY per-session yaw (anchored where the headset faced
+## at app start; probe measured +43 deg one session).  These build the
+## world->robot bridge by MEASURING the operator's heading at anchor time.
+
+# Head-local gaze axis.  Was +x, probed on the WebRTC app; the gvlink app
+# reports head orientation in Unity's own basis (+z forward), and the old
+# value sat 76 deg off it -- a constant yaw error in every session_yaw_remap,
+# i.e. in every arm's mapping.  Re-measured 2026-08-26 with frame_calibrate.py:
+# +z is 1.9 deg from the operator's measured forward, with a 0.90 horizontal
+# projection (the angle alone is not enough -- a near-vertical axis projects to
+# almost nothing and its angle is noise; +y scored 3.8 deg on a 0.435 projection).
+HEAD_LOCAL_FWD = np.array([0.0, 0.0, 1.0])
+
+
+def session_yaw_remap(head_pose, base_remap):
+    """Remap from the app world to the robot, calibrated to the operator's
+    facing direction at this moment.
+
+    forward = horizontal projection of the head's gaze (R_head @ HEAD_LOCAL_FWD),
+    up = world +z (shared between app world and robot world), left = z x fwd.
+    W maps app-world vectors to (fwd, left, up) components; base_remap maps
+    (fwd, left, up) to the robot frame.  Returns base_remap @ W, or None when
+    the gaze is too vertical to define a heading (caller keeps its previous or
+    static mapping)."""
+    f = np.asarray(head_pose)[:3, :3] @ HEAD_LOCAL_FWD
+    f = np.array([f[0], f[1], 0.0])
+    n = np.linalg.norm(f)
+    if n < 0.2:
+        return None
+    f /= n
+    u = np.array([0.0, 0.0, 1.0])
+    l = np.cross(u, f)
+    W = np.stack([f, l, u])
+    return np.asarray(base_remap, dtype=float) @ W
+
+
 
 @jit(float64[:,:](float64[:,:]), nopython=True, fastmath=True, cache=True)
 def align_rotation_to_z_axis(matrix):     
