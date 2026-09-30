@@ -81,6 +81,10 @@ services:
       # geometry -- measure from CAD and fill these in.
       - MIDDLE_ZED_XYZ=0 0 0
       - MIDDLE_ZED_RPY=0 0 0
+      # Inter-arm collision gate, same switch and file as the manipulators'
+      # (see ../manip-arm/docker-compose.yml).
+      - RIG_GATE=1
+      - RIG_GATE_MARGIN=0.03
       # Deliberately NOT 0. Zero is the ROS 2 default, so every ROS 2 machine on
       # the same network joins that graph -- on the lab wifi this host picked up
       # a separate glove/IMU teleop rig (/glove/*, /wrist_imu/*, /right_hand)
@@ -99,6 +103,9 @@ services:
       - /dev:/dev
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./workspace:/home/robot/workspace
+      # Shared rig geometry for the collision gate, read-only -- see the note
+      # in ../manip-arm/docker-compose.yml.
+      - ../rig:/home/robot/rig:ro
 
 
     # Autostart: after `docker compose up -d` this container's topics are live

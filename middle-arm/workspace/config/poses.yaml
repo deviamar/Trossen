@@ -1,8 +1,61 @@
 # Named poses for the middle arm. Radians, in joint_order:
-#   [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate]
+#   [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate, camera_yaw]
 # Written by pose.py, or by <ns>/save_pose (the save key in rig_key.py, which
 # captures all three arms at once). Built-in poses live in arm_config.POSES and
 # are overlaid by this file, so a name here wins.
+#
+# <name>_via1..N are visited in order before <name>. rest_via1 / start_via1
+# (2026-09-29): the start pose with the WRIST joints (forearm_roll,
+# wrist_rotate, camera_yaw) already at their rest values. A straight
+# start->rest ramp swings the camera through the left arm's parked forearm
+# (capsule gap -26 mm at the midpoint, offline); turning the wrist first and
+# folding second keeps it >= +5 mm the whole way, both directions.
+# start_yawup (2026-09-29, untested): start with wrist_rotate -0.42 rad so the
+# camera_yaw motor's axis stands ~vertical (0.92 vs 0.29 at start), letting a
+# head yaw be answered by that motor instead of the whole arm. Where the
+# camera then LOOKS depends on the unmeasured ZED mount -- try it, re-aim, and
+# save the result as 'start' if it is good.
+# forward / forward_roll90 (2026-09-29, untested): giava's M_FORWARD ("higher
+# forward pose to see the tabletop and both grippers") mapped into our motor
+# zeros. The waist (-pi) and camera_yaw (-0.73) offsets are inferred from the
+# one pose both rigs share (rest); the wrist_rotate offset is AMBIGUOUS, so
+# both readings are here: 'forward' assumes our roll zero differs from
+# giava's by -1.46 rad, 'forward_roll90' assumes they agree. One of them has
+# the camera level. Both put the camera high above the middle base and
+# COLLIDE (capsule) with the manipulators parked at rest -- use them only
+# with the manipulators at start.
+forward:
+- -0.342
+- -1.355
+- 0.319
+- 0.124
+- 1.362
+- 0.057
+- 1.751
+forward_roll90:
+- -0.342
+- -1.355
+- 0.319
+- 0.124
+- 1.362
+- 1.517
+- 1.751
+forward_roll90_via1:
+- -0.342
+- -1.355
+- 0.319
+- -0.0905
+- 1.362
+- 0.1197
+- 1.5708
+forward_via1:
+- -0.342
+- -1.355
+- 0.319
+- -0.0905
+- 1.362
+- 0.1197
+- 1.5708
 home:
 - 0.0
 - 0.0
@@ -17,6 +70,14 @@ rest:
 - 1.5957
 - -0.0905
 - 0.6872
+- 0.1197
+- 1.5708
+rest_via1:
+- -0.0337
+- -0.4863
+- 0.9679
+- -0.0905
+- 0.2255
 - 0.1197
 - 1.5708
 sleep:
@@ -35,3 +96,27 @@ start:
 - 0.2255
 - -2.2994
 - 0.8943
+start_via1:
+- -0.0337
+- -0.4863
+- 0.9679
+- -0.0905
+- 0.2255
+- 0.1197
+- 1.5708
+start_yawup:
+- -0.0337
+- -0.4863
+- 0.9679
+- 1.8822
+- 0.2255
+- -0.42
+- 0.8943
+start_yawup_via1:
+- -0.0337
+- -0.4863
+- 0.9679
+- -0.0905
+- 0.2255
+- 0.1197
+- 1.5708

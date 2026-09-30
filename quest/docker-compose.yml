@@ -93,6 +93,9 @@ services:
       # session. false leaves teleop running after parking. The wait is how
       # long the link stays up so the agents can finish the move.
       - QUEST_REST_BUTTON=right
+      # Look-around toggle: "left" = Y. "right_stick" (click the right
+      # thumbstick) when the left controller is out of action.
+      - QUEST_LOOK_BUTTON=${QUEST_LOOK_BUTTON:-left}
       - QUEST_REST_QUITS=true
       - QUEST_REST_QUIT_WAIT=12
       - QUEST_MIDDLE_NS=/middle
@@ -119,7 +122,15 @@ services:
       # A local SBS stereo camera (empty = use the ROS topics above instead).
       # Uncalibrated, so the viewer is given synthesised geometry -- measure
       # these two if the stereo does not sit comfortably.
-      - QUEST_CAMERA=/dev/video4
+      # PER MACHINE: `export QUEST_CAMERA=/dev/videoN` before compose, or edit
+      # the default here. The index is not stable across hosts -- it counts every
+      # V4L2 node already registered, so a laptop with an internal webcam puts
+      # the same camera several numbers higher than a Jetson does (video4 here,
+      # video0 on the Orin). Used BOTH here and in `devices:` below, and they
+      # must agree: a mismatch is either "error gathering device information ...
+      # no such file or directory" at start, or a driver that opens the wrong
+      # node and reports no frames.
+      - QUEST_CAMERA=${QUEST_CAMERA:-/dev/video0}
       - QUEST_CAM_HFOV_DEG=70
       - QUEST_CAM_BASELINE_M=0.06
       - ROS_DOMAIN_ID=42
@@ -130,7 +141,7 @@ services:
     # without running privileged. The ZED on the middle arm does NOT come
     # through here -- it is that container's device and arrives as ROS topics.
     devices:
-      - /dev/video4:/dev/video4
+      - ${QUEST_CAMERA:-/dev/video0}:${QUEST_CAMERA:-/dev/video0}
     group_add:
       - video
 

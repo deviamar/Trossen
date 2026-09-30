@@ -21,30 +21,39 @@ arms:
   # manip-arm/docker-compose.yml, and the two must stay in step: if the command
   # remap is retuned, this rotation is wrong until it is retuned too.
   #
-  # Position: ESTIMATE, from Trossen's stock mobile_ai.urdf. Not measured on
-  # this rig.
+  # Position: MEASURED 2026-09-29 (tape, lift fully down). Base plate centres
+  # 21 cm either side of the middle arm along y, 55 cm above the floor. x is
+  # the mast bar's; the bar sits over the SLATE's centre and all three arms
+  # share it, so the arms' RELATIVE geometry -- what the collision gate needs
+  # -- is exact and their common fore/aft offset from the drive axle is not
+  # (a few cm; it only moves the whole group in the 3D view).
+  #
+  # ALL THREE ARMS RIDE THE LIFT (they hang off the mast bar, which is bolted
+  # to the lift platform), so their parent is lift_platform and these xyz are
+  # at lift height 0. The collision gate applies the lift height to every arm
+  # with this parent; the 3D view currently draws the WXAI arms on base_link.
   left:
-    xyz: [0.331, 0.300, 0.831]
+    parent: lift_platform
+    xyz: [0.0, 0.210, 0.550]
     rpy: [0.0, 1.5707963, 0.0]
   right:
-    xyz: [0.331, -0.300, 0.831]
+    parent: lift_platform
+    xyz: [0.0, -0.210, 0.550]
     rpy: [0.0, 1.5707963, 0.0]
 
-# ESTIMATE, from tools/step_tree.py against assets/Mobile_Base.STEP, expressed
-# relative to the SLATE part. Unverified: the same extraction put the two wxai
-# arms at an identical y, which cannot be right for a left/right pair, so the
-# whole set is suspect. Here so the lift APPEARS and can be corrected by eye.
+# The lift's own origin is the floor under the SLATE's centre, height measured
+# from there: with `lift.xyz` at z = 0 every arm's z above is a plain "above the
+# floor" number, which is what a tape measure gives.
 lift:
-  xyz: [0.226, 0.201, 0.90]
+  xyz: [0.0, 0.0, 0.0]
   rpy: [0.0, 0.0, 0.0]
   # Travel of the prismatic joint, metres. The driver reports height on
   # /slate/lift/height; this is the range that reading is drawn over.
   travel: [0.0, 0.40]
 
-# ESTIMATE, same source and same caveat. Mounted ON the lift platform, so it
-# rides up and down with it -- which is the reason the lift is in the model at
-# all rather than being drawn as a static block.
+# MEASURED 2026-09-29: base plate centred on the SLATE, its underside 59 cm
+# above the floor with the lift fully down. Upright (rpy 0).
 middle:
   parent: lift_platform
-  xyz: [0.012, 0.0, 0.10]
+  xyz: [0.0, 0.0, 0.590]
   rpy: [0.0, 0.0, 0.0]

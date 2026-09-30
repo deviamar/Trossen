@@ -225,6 +225,46 @@ REST_HOLD_S = float(os.environ.get("QUEST_REST_HOLD_S", 1.5))
 REST_QUITS = os.environ.get("QUEST_REST_QUITS", "true").strip().lower() == "true"
 REST_QUIT_WAIT_S = float(os.environ.get("QUEST_REST_QUIT_WAIT", 12.0))
 
+# WHAT THE APP DOES WITH B AND Y, from its source (av-aloha-unity v2,
+# GvSessionMenu.cs, PollSummon): the in-session menu opens on a HOLD of B or Y
+# of holdToOpen = 0.5 s, and "a tap is left alone". While the menu is open the
+# next press of either closes it. The buttons keep streaming to us throughout.
+#
+# So the hold above was the wrong shape: at 0.5 s the app opens its menu, and
+# our 1.5 s hold fires into that. TAPS are the gesture the app has reserved
+# for us. A tap is a press released within TAP_MAX_S -- comfortably under the
+# app's 0.5 s -- and the rest gesture is a DOUBLE tap, because a single tap
+# is what a hand brushing a button produces.
+#
+#   double  two taps within DOUBLE_TAP_S      (default)
+#   hold    the old REST_HOLD_S hold -- opens the app menu on the way
+#   tap     one tap -- fires by accident; diagnostic use only
+REST_GESTURE = os.environ.get("QUEST_REST_GESTURE", "double").strip().lower()
+TAP_MAX_S = float(os.environ.get("QUEST_TAP_MAX_S", 0.35))
+DOUBLE_TAP_S = float(os.environ.get("QUEST_DOUBLE_TAP_S", 0.8))
+
+# LOOK-AROUND: one tap of Y (the left controller's secondary button) toggles
+# the camera arm following your head WITHOUT either hand engaged, so you can
+# look around the scene with the manipulators parked. Tap again to stop.
+# Engaging a hand while looking around keeps the camera following, as
+# before; letting go of both hands with look-around ON keeps it following.
+# "off" disables the toggle. Must differ from REST_BUTTON.
+# "left" = Y, "right" = B (conflicts with REST_BUTTON=right), "left_stick" /
+# "right_stick" = click that thumbstick, "off". right_stick is the fallback
+# when the left controller is dead: the right stick's CLICK is free (its axes
+# drive the lift), and a click is a tap the app does not claim.
+LOOK_BUTTON = os.environ.get("QUEST_LOOK_BUTTON", "left").strip().lower()
+
+
+def button_of(spec, default_index):
+    """('left'|'right', button index) for a *_BUTTON spec, or None for off."""
+    spec = (spec or "off").strip().lower()
+    if spec in ("left", "right"):
+        return spec, default_index
+    if spec.endswith("_stick") and spec[:-6] in ("left", "right"):
+        return spec[:-6], BTN_STICK
+    return None
+
 
 def unity_to_ros_position(x, y, z):
     """Unity (left-handed, Y up) -> ROS (right-handed, Z up)."""

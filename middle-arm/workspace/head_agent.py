@@ -56,6 +56,7 @@ from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
 from interbotix_xs_msgs.msg import JointGroupCommand
+from std_msgs.msg import Float32
 
 import arm_config as cfg
 
@@ -76,6 +77,22 @@ POSE_SPEED = float(os.environ.get("MIDDLE_POSE_SPEED", 0.6))
 
 POSES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config", "poses.yaml")
+
+# THE INTER-ARM COLLISION GATE -- rig/rig_collision.py, mounted read-only.
+# Every JointGroupCommand is checked against where the two manipulators were
+# last reported before it is published; one that would bring this arm's
+# capsules (camera included) within the margin of theirs is not sent and the
+# arm holds. Same module, same yaml and same semantics as the manipulators'
+# arm_agent.py, so the three agents agree on the geometry by construction.
+RIG_GATE = os.environ.get("RIG_GATE", "0").strip() == "1"
+RIG_GATE_FILE = os.environ.get("RIG_GATE_FILE", "/home/robot/rig/capsules.yaml")
+RIG_GATE_MARGIN = float(os.environ.get("RIG_GATE_MARGIN", 0.03))
+RIG_PEERS = {
+    "left_arm": "/left_arm/joint_states",
+    "right_arm": "/right_arm/joint_states",
+    "middle": "/middle/joint_states",
+}
+LIFT_HEIGHT_TOPIC = os.environ.get("RIG_LIFT_TOPIC", "/slate/lift/height")
 
 # Re-written on every save, because yaml.safe_dump cannot preserve comments and
 # a pose file with no explanation of its units is a trap.
@@ -156,17 +173,29 @@ class HeadAgent(Node):
         self.rejects = 0
         self.joint_goal = None        # named-pose destination, radians
         self.goal_name = ""
+        self.pose_queue = []          # [(goal, label), ...] still to visit
+        self.gate = None
+        self.me = None
+        self.gate_holding = False
+        self.gate_said = 0.0
 
         self.create_subscription(JointState, f"{NS}/joint_states", self._on_js, 1)
         self.create_subscription(PoseStamped, f"{NS}/cmd_pose", self._on_pose, 1)
         self.create_subscription(String, f"{NS}/cmd_pose_name", self._on_pose_name, 1)
         self.create_subscription(String, f"{NS}/save_pose", self._on_save_pose, 1)
         self.create_subscription(Bool, f"{NS}/enable", self._on_enable, 1)
+        # Exit so start.sh's supervisor relaunches this agent with fresh code.
+        # The driver is untouched, so the arm keeps its torque -- this is the
+        # way to reload head_agent; restarting the container is not.
+        self.create_subscription(Bool, f"{NS}/reset", self._on_reset, 1)
 
         self.pub_ee = self.create_publisher(PoseStamped, f"{NS}/ee_pose", 1)
         self.pub_active = self.create_publisher(Bool, f"{NS}/active", 1)
         self.pub_names = self.create_publisher(String, f"{NS}/pose_names", 1)
+        self.pub_clearance = self.create_publisher(String, f"{NS}/clearance", 1)
         self.create_timer(1.0, self._names_tick)
+        if RIG_GATE:
+            self._init_gate()
         # The real xs_sdk interface: one JointGroupCommand for the whole arm
         # group, positions in radians in joint_order. Same topic and message
         # pose.py and move_joint.py already use, so this agent is one more
@@ -177,6 +206,80 @@ class HeadAgent(Node):
         self.create_timer(1.0 / STREAM_HZ, self._control_tick)
         self.create_timer(1.0 / 20.0, self._state_tick)
 
+    # ---- collision gate --------------------------------------------------
+    def _init_gate(self):
+        try:
+            sys.path.insert(0, os.path.dirname(RIG_GATE_FILE))
+            from rig_collision import RigGate
+            gate = RigGate(RIG_GATE_FILE, margins={"structure": RIG_GATE_MARGIN,
+                                                   "gripper": RIG_GATE_MARGIN})
+        except Exception as e:
+            self.get_logger().error(
+                f"collision gate REQUESTED but unavailable: {e} -- running WITHOUT it. "
+                f"Is {os.path.dirname(RIG_GATE_FILE)} mounted (docker-compose.yml)?")
+            return
+        me = gate.by_ns(NS)
+        if me is None:
+            self.get_logger().error(
+                f"collision gate: no arm with ns {NS!r} in {RIG_GATE_FILE} -- running WITHOUT it")
+            return
+        n = self.robot.joints.num_actuated_joints
+        if gate.arms[me].n != n:
+            self.get_logger().error(
+                f"collision gate: {RIG_GATE_FILE} models {me!r} with {gate.arms[me].n} joints, "
+                f"the URDF has {n} -- re-run tools/fit_capsules.py. Running WITHOUT it")
+            return
+        self.gate, self.me = gate, me
+        for arm, topic in RIG_PEERS.items():
+            if arm == me:
+                continue
+            self.create_subscription(
+                JointState, topic, lambda m, a=arm: self.gate.update(a, m.position), 1)
+        self.create_subscription(Float32, LIFT_HEIGHT_TOPIC,
+                                 lambda m: self.gate.set_lift(m.data), 1)
+        self.get_logger().info(
+            f"collision gate ON as {me!r}: margin {RIG_GATE_MARGIN * 1e3:.0f} mm "
+            f"(camera {gate.margins['camera'] * 1e3:.0f}), peers {[a for a in RIG_PEERS if a != me]}")
+
+    def _gate_allows(self, q_goal, q_now, why):
+        if self.gate is None:
+            return True
+        try:
+            v = self.gate.check(self.me, np.asarray(q_goal, float), q_now)
+        except Exception as e:
+            self.get_logger().error(f"collision gate failed ({e}) -- allowing {why}",
+                                    throttle_duration_sec=5.0)
+            return True
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if v.ok:
+            if self.gate_holding:
+                self.gate_holding = False
+                self.get_logger().info(f"collision gate: clear again ({v})")
+            return True
+        if not self.gate_holding or now - self.gate_said > 2.0:
+            self.gate_said = now
+            self.get_logger().warn(
+                f"COLLISION GATE holding {why}: {v}. Back away; the arm holds until "
+                "the pair clears the margin.")
+        self.gate_holding = True
+        return False
+
+    def _publish_clearance(self, q):
+        try:
+            v = self.gate.clearance(self.me, q)
+        except Exception:
+            return
+        m = String()
+        m.data = json.dumps({
+            "arm": self.me, "holding": bool(self.gate_holding),
+            "distance_m": None if not math.isfinite(v.distance_m) else round(v.distance_m, 4),
+            "margin_m": round(v.margin_m, 4),
+            "slack_m": None if not math.isfinite(v.slack_m) else round(v.slack_m, 4),
+            "pair": list(v.pair) if v.pair else None,
+            "peers": v.peers, "missing": v.skipped,
+        })
+        self.pub_clearance.publish(m)
+
     # ---- inputs ----------------------------------------------------------
     def _on_js(self, msg):
         n = self.robot.joints.num_actuated_joints
@@ -186,6 +289,8 @@ class HeadAgent(Node):
             self.measured = np.asarray(msg.position[:n], dtype=np.float64)
             if self.q_cmd is None:
                 self.q_cmd = self.measured.copy()
+        if self.gate is not None:
+            self.gate.update(self.me, msg.position[:n])
 
     def _on_enable(self, msg):
         with self.lock:
@@ -195,6 +300,7 @@ class HeadAgent(Node):
                 # would step the arm by however far it had drifted.
                 self.target = None
                 self.joint_goal = None
+                self.pose_queue = []
                 self.rejects = 0
                 if self.measured is not None:
                     self.q_cmd = self.measured.copy()
@@ -202,8 +308,21 @@ class HeadAgent(Node):
             elif not msg.data and self.enabled:
                 self.target = None
                 self.joint_goal = None
+                self.pose_queue = []
                 self.get_logger().info("disabled -- holding position")
             self.enabled = bool(msg.data)
+
+    def _on_reset(self, msg):
+        if not msg.data:
+            return
+        self.get_logger().warn("reset requested -- exiting; start.sh relaunches this agent, "
+                               "the driver keeps holding the arm")
+        with self.lock:
+            self.enabled = False
+            self.target = None
+            self.joint_goal = None
+            self.pose_queue = []
+        raise SystemExit(17)
 
     def _on_pose(self, msg):
         p = msg.pose.position
@@ -222,6 +341,7 @@ class HeadAgent(Node):
             self.target = (want_p, want_q)
             # Streaming and a named move must not fight over q_cmd.
             self.joint_goal = None
+            self.pose_queue = []
             self.last_cmd = self.get_clock().now().nanoseconds * 1e-9
 
     def _on_save_pose(self, msg):
@@ -278,14 +398,26 @@ class HeadAgent(Node):
             self.get_logger().error(
                 f"no pose {name!r}; have: {', '.join(sorted(poses))}")
             return
-        goal = np.asarray(poses[name], dtype=np.float64)
-        lims = [cfg.JOINT_LIMITS[j] for j in cfg.JOINT_NAMES[:len(goal)]]
-        bad = [f"{cfg.JOINT_NAMES[i]}={v:.3f} outside [{lo:.3f}, {hi:.3f}]"
-               for i, (v, (lo, hi)) in enumerate(zip(goal, lims))
-               if not lo <= v <= hi]
-        if bad:
-            self.get_logger().error(f"pose {name!r} refused: {'; '.join(bad)}")
-            return
+        # WAYPOINTS, same convention as arm_agent: '<name>_via1', '_via2', ...
+        # are visited in order before '<name>'. This arm's straight ramp from
+        # start to rest swings the camera through the left arm's parked
+        # forearm; rest_via1 turns the wrist first and folds second.
+        labels = [name]
+        k = 1
+        while f"{name}_via{k}" in poses:
+            labels.insert(len(labels) - 1, f"{name}_via{k}")
+            k += 1
+        queue = []
+        for label in labels:
+            goal = np.asarray(poses[label], dtype=np.float64)
+            lims = [cfg.JOINT_LIMITS[j] for j in cfg.JOINT_NAMES[:len(goal)]]
+            bad = [f"{cfg.JOINT_NAMES[i]}={v:.3f} outside [{lo:.3f}, {hi:.3f}]"
+                   for i, (v, (lo, hi)) in enumerate(zip(goal, lims))
+                   if not lo <= v <= hi]
+            if bad:
+                self.get_logger().error(f"pose {label!r} refused: {'; '.join(bad)}")
+                return
+            queue.append((goal, label))
         with self.lock:
             if not self.enabled:
                 self.get_logger().warn(f"pose {name!r} ignored -- not enabled")
@@ -293,13 +425,16 @@ class HeadAgent(Node):
             if self.q_cmd is None:
                 self.get_logger().warn(f"pose {name!r} ignored -- no joint_states yet")
                 return
+            goal, label = queue.pop(0)
             n = min(len(goal), len(self.q_cmd))
             self.target = None
             self.joint_goal = goal[:n]
-            self.goal_name = name
+            self.goal_name = label
+            self.pose_queue = queue
             secs = float(np.max(np.abs(self.joint_goal - self.q_cmd[:n]))) / POSE_SPEED
         self.get_logger().info(
-            f"pose {name!r}: ramping over ~{secs:.1f} s at {POSE_SPEED} rad/s")
+            f"pose {name!r}: ramping over ~{secs:.1f} s at {POSE_SPEED} rad/s"
+            + (f" via {' -> '.join(l for _, l in queue)}" if queue else ""))
 
     def _reject_reason(self, want_p):
         """Gross nonsense only. Distance from the arm is NOT a reason.
@@ -365,17 +500,31 @@ class HeadAgent(Node):
         q_new = prev_q.copy()
         q_new[:n] = prev_q[:n] + np.clip(goal - prev_q[:n], -step, step)
         done = bool(np.max(np.abs(goal - q_new[:n])) < 1e-4)
+        # Gate the STEP, not just the destination: a named move is a ramp of
+        # small steps, so refusing one holds the arm exactly where the pair
+        # would otherwise start closing, and the move resumes by itself when
+        # the other arm has gone.
+        if not self._gate_allows(q_new, prev_q, f"pose {name!r}"):
+            return
+        nxt = None
         with self.lock:
             if self.joint_goal is None:      # cancelled while we computed
                 return
             self.q_cmd = q_new
             if done:
-                self.joint_goal = None
+                if self.pose_queue:
+                    goal2, label2 = self.pose_queue.pop(0)
+                    self.joint_goal = goal2[:len(self.joint_goal)]
+                    self.goal_name = label2
+                    nxt = label2
+                else:
+                    self.joint_goal = None
         if not self.dry_run:
             self.pub_cmd.publish(
                 JointGroupCommand(name=GROUP, cmd=[float(v) for v in q_new]))
         if done:
-            self.get_logger().info(f"pose {name!r} reached")
+            self.get_logger().info(f"pose {name!r} reached"
+                                   + (f" -- next: {nxt!r}" if nxt else ""))
 
     def _control_tick(self):
         with self.lock:
@@ -418,6 +567,9 @@ class HeadAgent(Node):
             self.get_logger().error("IK returned non-finite joints -- ignoring")
             return
 
+        if not self._gate_allows(q_new, prev_q, "stream"):
+            return          # q_cmd untouched: the arm holds its last command
+
         with self.lock:
             self.q_cmd = q_new
 
@@ -452,6 +604,8 @@ class HeadAgent(Node):
         a = Bool()
         a.data = bool(enabled)
         self.pub_active.publish(a)
+        if self.gate is not None:
+            self._publish_clearance(q)
 
 
 def main():

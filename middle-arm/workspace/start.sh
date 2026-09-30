@@ -108,7 +108,22 @@ done
 # it here means the stall happens now, with the arm still, rather than in the
 # middle of a live session.
 echo "  starting head agent (compiling the IK solver, this takes a few seconds)"
-./head_agent.py --urdf "${URDF}" &
+# SUPERVISED, so head_agent can be restarted WITHOUT taking the driver down.
+# `wait -n` below returns when ANY child exits, and the EXIT trap then kills
+# every child -- including xs_sdk, which is what holds the arm's torque. So a
+# head_agent restart (a code reload, a crash, <ns>/reset) used to drop the arm
+# on the bench. Now head_agent runs inside its own loop: it comes back on its
+# own two seconds after exiting, and only the DRIVER ending brings the
+# container down. To reload head_agent code:
+#     docker compose exec middle-arm pkill -f head_agent.py
+(
+  while true; do
+    ./head_agent.py --urdf "${URDF}"
+    code=$?
+    echo "  head_agent exited (${code}) -- restarting in 2 s; the driver keeps holding the arm"
+    sleep 2
+  done
+) &
 PIDS+=($!)
 
 echo "=== middle-arm ready ==="

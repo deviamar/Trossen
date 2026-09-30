@@ -22,7 +22,15 @@ policy and nothing downstream changes.
 | **A** (right, hold) | right arm follows the right controller |
 | **X** (left, hold) | left arm follows the left controller |
 | either A or X | camera arm follows your head |
-| Index trigger | that arm's gripper — released stages the fingers open, squeezed commands an analog **closing force** (`cmd_grip_force`), so grasping an object can never fault the arm on a position error |
+| **Y** (left, tap) | **look-around** on/off: the camera arm follows your head with both hands free. Tap again to stop |
+| **B** (right, double-tap) | every arm to its `rest` pose, then the session ends. Only when no hand is engaged |
+| Index trigger | that arm's gripper — released pushes the fingers **open with a force**, squeezed commands an analog **closing force** (`cmd_grip_force`). Force both ways, so the gripper never changes mode and grasping an object can never fault the arm on a position error |
+
+**Why taps.** The Unity app opens its own menu on a **hold ≥ 0.5 s** of B or Y
+and leaves taps alone (`GvSessionMenu.cs`), so a hold is the one gesture we
+cannot use. A double-tap for rest because a single tap is what a hand brushing
+a button produces. `QUEST_REST_GESTURE=hold` restores the old hold if you want
+the menu too.
 
 Hold to engage, not toggle. Releasing stops the arm following you; a toggle
 leaves an armed robot behind when you set the controller down.

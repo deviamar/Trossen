@@ -197,6 +197,44 @@ class Link:
         self.grip_sent = want
 
 
+class Taps:
+    """Turns a button's pressed/released stream into tap, double-tap and hold
+    events, so the two gestures the Unity app leaves free (a tap, a double
+    tap) can be told apart from the one it claims (a hold -- see
+    quest_config.REST_GESTURE). feed() is called every tick and returns at
+    most one event: "tap", "double" or "hold". A tap also precedes a double,
+    so a handler wanting only doubles ignores "tap"."""
+
+    def __init__(self, tap_max_s, double_s, hold_s):
+        self.tap_max_s, self.double_s, self.hold_s = tap_max_s, double_s, hold_s
+        self.down_at = None
+        self.last_tap_at = None
+        self.hold_fired = False
+
+    def feed(self, pressed, now):
+        if pressed:
+            if self.down_at is None:
+                self.down_at = now
+                self.hold_fired = False
+                return None
+            if (self.hold_s > 0 and not self.hold_fired
+                    and now - self.down_at >= self.hold_s):
+                self.hold_fired = True
+                return "hold"
+            return None
+        if self.down_at is None:
+            return None
+        held = now - self.down_at
+        self.down_at = None
+        if self.hold_fired or held > self.tap_max_s:
+            return None                       # a long press released: not a tap
+        if self.last_tap_at is not None and now - self.last_tap_at <= self.double_s:
+            self.last_tap_at = None
+            return "double"
+        self.last_tap_at = now
+        return "tap"
+
+
 def _yaw_matrix(deg):
     a = np.radians(float(deg))
     c, s = np.cos(a), np.sin(a)
@@ -229,8 +267,18 @@ class QuestTeleop(Node):
             self.links["middle"] = Link(self, cfg.MIDDLE_NS, "middle", "camera",
                                         args.dry_run, has_gripper=False)
 
-        self._rest_was = False
-        self._rest_since = 0.0
+        # One tap detector per (hand, button) a gesture is bound to.
+        self._rest_btn = cfg.button_of(cfg.REST_BUTTON, cfg.BTN_SECONDARY)
+        self._look_btn = cfg.button_of(cfg.LOOK_BUTTON, cfg.BTN_SECONDARY)
+        if self._look_btn is not None and self._look_btn == self._rest_btn:
+            self.get_logger().warn(
+                f"QUEST_LOOK_BUTTON and QUEST_REST_BUTTON are both {cfg.REST_BUTTON!r} "
+                "-- look-around disabled")
+            self._look_btn = None
+        self._taps = {b: Taps(cfg.TAP_MAX_S, cfg.DOUBLE_TAP_S, cfg.REST_HOLD_S)
+                      for b in (self._rest_btn, self._look_btn) if b is not None}
+        self._rest_after = None        # fire rest at this time (deferred one tick)
+        self.look_around = False       # camera arm follows the head, hands free
         self._quit_at = None
         self._rest_pending = {}        # key -> deadline; enabled, name not yet sent
         self.state = TeleopSessionState()
@@ -334,8 +382,9 @@ class QuestTeleop(Node):
         want = {"left": self._button("left"), "right": self._button("right")}
         # The camera arm follows your head whenever either hand is working --
         # you want the view to track you while your hands are busy, and to stop
-        # when you let go of both. Straight from giava's arm_active.
-        want["middle"] = want["left"] or want["right"]
+        # when you let go of both. Straight from giava's arm_active. Or when
+        # look-around is on (tap Y): head only, hands parked.
+        want["middle"] = want["left"] or want["right"] or self.look_around
 
         engaging = any(want[k] for k in self.links)
 
@@ -350,7 +399,7 @@ class QuestTeleop(Node):
             self._drive(key, link, poses, want[key])
 
         self._grippers()
-        self._rest_button()
+        self._gestures(want)
         self._base()
         self._feedback(poses)
 
@@ -431,42 +480,66 @@ class QuestTeleop(Node):
         self.cmd_kin.T_cmd[key] = np.concatenate(
             [np.asarray(target_wxyz, dtype=float), np.asarray(target_pos, dtype=float)])
 
-    def _rest_button(self):
-        """B (or Y) parks every arm at its saved rest pose.
+    def _gestures(self, want):
+        """B (double-tap) parks the rig; Y (tap) toggles look-around.
 
-        Edge-triggered, so holding it sends one command rather than one per
-        tick, and refused outright while an arm is engaged: a whole-rig move
-        that can start under your thumb mid-teleop is not a convenience.
+        Both are TAPS because the Unity app opens its menu on a 0.5 s HOLD of
+        either button and ignores taps -- see quest_config.REST_GESTURE.
+        """
+        now = self.get_clock().now().nanoseconds * 1e-9
+        ev = {b: self._taps[b].feed(self._button(b[0], b[1]), now) for b in self._taps}
+
+        # ---- look-around -------------------------------------------------
+        if (self._look_btn is not None and ev.get(self._look_btn) == "tap"
+                and self._quit_at is None):
+            self.look_around = not self.look_around
+            if self.look_around and "middle" not in self.links:
+                self.look_around = False
+                self.get_logger().warn("look-around: no middle arm (--no-middle)")
+            else:
+                self.get_logger().info(
+                    "LOOK-AROUND " + ("ON: the camera arm follows your head; hands are free"
+                                      if self.look_around else "off"))
+
+        # ---- rest ----------------------------------------------------------
+        if self._quit_at is not None or self._rest_btn is None:
+            return
+        evr = ev.get(self._rest_btn)
+        fire = {"double": evr == "double", "hold": evr == "hold",
+                "tap": evr == "tap"}.get(cfg.REST_GESTURE, False)
+        if fire:
+            hands = want["left"] or want["right"]
+            if hands:
+                self.get_logger().warn(
+                    "rest ignored while a hand is engaged -- let go first")
+                return
+            if self.look_around:
+                # Look-around is the only thing holding the session. Drop it
+                # and let _drive release the camera arm on the next tick, THEN
+                # park -- enabling it for a named move in the same tick as a
+                # disable would cancel the move.
+                self.look_around = False
+                self._rest_after = now + 0.1
+                self.get_logger().info("rest: ending look-around first")
+                return
+            self._rest_after = now
+        if self._rest_after is not None and now >= self._rest_after:
+            self._rest_after = None
+            if self.state.active:
+                self.get_logger().warn("rest ignored: an arm is still engaged")
+                return
+            self._fire_rest(now)
+
+    def _fire_rest(self, now):
+        """Enable every arm, then send REST_POSE once each confirms (see
+        _rest_pump), then end the session after REST_QUIT_WAIT_S.
 
         The arms are ENABLED first and deliberately left enabled -- an agent
         ignores a named move while disabled, and disabling it mid-move would
-        drop the arm wherever it had got to.
+        drop the arm wherever it had got to. enable and cmd_pose_name are
+        different topics and nothing orders them, so the name goes out only
+        after the agent reports active.
         """
-        if self._quit_at is not None:
-            return                       # already parking; one press is enough
-        if cfg.REST_BUTTON not in ("left", "right"):
-            return
-        pressed = self._button(cfg.REST_BUTTON, cfg.BTN_SECONDARY)
-        was, self._rest_was = self._rest_was, pressed
-        now = self.get_clock().now().nanoseconds * 1e-9
-        if not pressed:
-            self._rest_since = 0.0
-            return
-        if not was:
-            self._rest_since = now          # just went down; start the clock
-            return
-        if now - self._rest_since < cfg.REST_HOLD_S:
-            return                          # still holding, not long enough yet
-        self._rest_since = now + 1e9        # fire once per hold, not every tick
-        if self.state.active:
-            self.get_logger().warn(
-                "rest button ignored while an arm is engaged -- let go first")
-            return
-        # Enable now; send the NAME only once each agent reports active.
-        # enable and cmd_pose_name are different topics and nothing orders
-        # them: sent back-to-back, an agent can see the name first and log
-        # "pose 'rest' ignored -- not enabled" -- B then quit the session
-        # with the arms still where they were. _rest_pump() finishes the job.
         names = []
         for key, link in self.links.items():
             if link.measured is None:
@@ -479,7 +552,6 @@ class QuestTeleop(Node):
             f"REST: {', '.join(names) or 'nothing'} -> {cfg.REST_POSE!r} "
             "(joint space, several seconds -- watch them)")
         if cfg.REST_QUITS:
-            now = self.get_clock().now().nanoseconds * 1e-9
             self._quit_at = now + cfg.REST_QUIT_WAIT_S
             self.get_logger().info(
                 f"then ending the session in {cfg.REST_QUIT_WAIT_S:.0f} s "
@@ -615,11 +687,18 @@ def main():
     print(f"    hold A   -> {cfg.ARM_NS_RIGHT}")
     if not args.no_middle:
         print(f"    either   -> {cfg.MIDDLE_NS}  (follows your head)")
+    lb = cfg.button_of(cfg.LOOK_BUTTON, cfg.BTN_SECONDARY)
+    if lb is not None and lb != cfg.button_of(cfg.REST_BUTTON, cfg.BTN_SECONDARY) \
+            and not args.no_middle:
+        b = {("left", 1): "Y", ("right", 1): "B"}.get(lb, f"{lb[0]} stick click")
+        print(f"    tap {b}    -> look-around on/off: {cfg.MIDDLE_NS} follows your head, hands free")
     if cfg.REST_BUTTON in ("left", "right"):
         b = "B" if cfg.REST_BUTTON == "right" else "Y"
         tail = " then QUITS" if cfg.REST_QUITS else ""
-        print(f"    {b} (hold {cfg.REST_HOLD_S:.0f}s) -> all arms to "
-              f"{cfg.REST_POSE!r}{tail}, and only when nothing is engaged")
+        how = {"double": f"double-tap {b}", "hold": f"hold {b} {cfg.REST_HOLD_S:.0f}s",
+               "tap": f"tap {b}"}.get(cfg.REST_GESTURE, f"double-tap {b}")
+        print(f"    {how} -> all arms to {cfg.REST_POSE!r}{tail}, only when no hand is engaged")
+        print("      (taps, because the app opens its menu on a 0.5 s hold and ignores taps)")
     print(f"    L stick  -> {cfg.BASE_NS}/cmd_vel_teleop  (fwd/back + turn)")
     print(f"    R stick  -> {cfg.BASE_NS}/lift/cmd_velocity  (z, sim until wired)")
     print("  waiting for the headset. Ctrl-C to stop.")

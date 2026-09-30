@@ -132,6 +132,7 @@ Subscribed by `arm_agent.py`, which holds the arm's single SDK connection.
 | `<ns>/joint_states` | `sensor_msgs/JointState` | `joint_0`…`joint_5` + `left_carriage_joint` |
 | `<ns>/pose_names` | `std_msgs/String` | Comma-separated names this arm can be sent to |
 | `<ns>/active` | `std_msgs/Bool` | Agent holds the connection and is accepting commands |
+| `<ns>/clearance` | `std_msgs/String` | JSON, 20 Hz, only with `RIG_GATE=1`: the collision gate's worst pair for this arm — `distance_m`, `margin_m`, `slack_m`, `pair`, `holding`. See [collision-gate.md](collision-gate.md) |
 
 **Joint space is not a convenience — it is the only escape from a singularity.**
 Near one the controller refuses Cartesian IK outright and every `cmd_pose` is
@@ -214,6 +215,7 @@ one code path.
 | `/middle/ee_pose` | `geometry_msgs/PoseStamped` | Measured camera pose, from FK |
 | `/middle/pose_names` | `std_msgs/String` | JSON list of poses this arm can be sent to |
 | `/middle/active` | `std_msgs/Bool` | Agent is accepting commands |
+| `/middle/clearance` | `std_msgs/String` | JSON, 20 Hz, only with `RIG_GATE=1` — same shape as the manipulators' |
 
 **No `cmd_gripper`.** The ZED sits where the gripper would be.
 

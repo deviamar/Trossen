@@ -101,5 +101,5 @@ if [ "${DRY}" = false ]; then
     done
     timeout 3 ros2 topic pub --once /slate/cmd_vel_teleop geometry_msgs/Twist \
       "{linear: {x: 0.0}, angular: {z: 0.0}}" >/dev/null 2>&1' >/dev/null 2>&1
-  echo "  arms released, base commanded to zero."
+  echo "  arms disabled (holding in position mode), base commanded to zero."
 fi

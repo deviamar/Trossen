@@ -400,7 +400,7 @@
     <limit effort="0" velocity="3.141592653589793" />
   </joint>
   <joint name="follower_left/mount_joint" type="fixed">
-    <origin rpy="0 1.5708 0" xyz="0.331 0.3 0.831" />
+    <origin rpy="0 1.5708 0" xyz="0 0.21 0.55" />
     <parent link="base_link" />
     <child link="follower_left/base_link" />
   </joint>
@@ -804,7 +804,7 @@
   </joint>
   <link name="follower_left/ee_gripper_link" />
   <joint name="follower_right/mount_joint" type="fixed">
-    <origin rpy="0 1.5708 0" xyz="0.331 -0.3 0.831" />
+    <origin rpy="0 1.5708 0" xyz="0 -0.21 0.55" />
     <parent link="base_link" />
     <child link="follower_right/base_link" />
   </joint>
@@ -1216,7 +1216,7 @@
     </visual>
   </link>
   <joint name="lift_base_joint" type="fixed">
-    <origin xyz="0.226 0.201 0.9" rpy="0 0 0" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
     <parent link="base_link" />
     <child link="lift_base" />
   </joint>
@@ -1566,7 +1566,7 @@
     </inertial>
   </link>
   <joint name="middle_mount_joint" type="fixed">
-    <origin xyz="0.012 0 0.1" rpy="0 0 0" />
+    <origin xyz="0 0 0.59" rpy="0 0 0" />
     <parent link="lift_platform" />
     <child link="middle/base_link" />
   </joint>

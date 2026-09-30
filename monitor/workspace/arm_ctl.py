@@ -7,7 +7,7 @@
     ./arm_ctl.py go ready --arm /left_arm --execute
     ./arm_ctl.py gripper 0.02 --arm /left_arm --execute
     ./arm_ctl.py joints 0 1.0 0.5 0 0 0 --arm /right_arm --execute
-    ./arm_ctl.py stop                          # release every arm
+    ./arm_ctl.py stop                          # disable every arm (they hold)
 
 The arms' equivalent of drive_test.py: the smallest thing that proves the ROS
 path works, from a container with no SDK and no hardware access. If this moves
@@ -217,9 +217,13 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list", parents=[common], help="poses each arm knows")
     sub.add_parser("state", parents=[common], help="where the arms are")
-    sub.add_parser("stop", parents=[common], help="release every arm (enable=false)")
+    sub.add_parser("stop", parents=[common], help="disable every arm (enable=false; they hold in position mode)")
     p = sub.add_parser("go", parents=[common], help="move to a named pose")
     p.add_argument("name")
+    p.add_argument("--first", default="/middle",
+                   help="send this arm first (default /middle); '' for all at once")
+    p.add_argument("--gap", type=float, default=8.0,
+                   help="seconds between the first arm and the rest")
     p = sub.add_parser("gripper", parents=[common], help="set the gripper opening, metres")
     p.add_argument("value", type=float)
     p = sub.add_parser("save", parents=[common],
@@ -302,12 +306,28 @@ def main():
                 return 0
             print(f"\n  MOVING {len(ok)} ARM(S) IN 2 SECONDS -- Ctrl-C to abort.")
             time.sleep(2.0)
-            for ns in ok:
+            # ORDER. --first sends one arm ahead of the rest by --gap seconds.
+            # The collision gate checks each arm against where the OTHERS are
+            # right now, so three arms recalled at once can each be waiting on
+            # another's mid-path posture -- observed: the left arm's final
+            # stage held against the middle arm mid-ramp while the middle arm
+            # held against the left arm's half-wrapped elbow. Sending the
+            # camera arm first (it travels through the space the manipulators
+            # fold into) removes the deadlock.
+            if args.first in ok and len(ok) > 1:
+                ok.remove(args.first)
+                ok.insert(0, args.first)
+            for i, ns in enumerate(ok):
                 if not node.enable(ns, True):
                     continue
                 m = String()
                 m.data = args.name
                 node.pub_name[ns].publish(m)
+                if i == 0 and args.first == ns and len(ok) > 1:
+                    print(f"  {ns} first; the others in {args.gap:.0f} s ...")
+                    end = time.monotonic() + args.gap
+                    while time.monotonic() < end:
+                        rclpy.spin_once(node, timeout_sec=0.05)
             for _ in range(40):
                 rclpy.spin_once(node, timeout_sec=0.05)
             print("  sent. Each arm reports progress in its own log.")

@@ -29,7 +29,7 @@ MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 .DEFAULT_GOAL := all
 .PHONY: all up build rebuild down restart status ps topics logs watch \
         drive-test drive torque arms arm-go arm-stop key jog tmux shell env check dash \
-        clean fresh help home start save-pose sim rig-urdf kill orphans debug quest
+        clean fresh help home start save-pose sim rig-urdf kill orphans debug quest clearance capsules
 
 ## all: build what is missing, then start everything
 all: build up
@@ -166,6 +166,17 @@ sim:
 	  | grep -qx sim || { echo "  sim is not running:  make up"; exit 1; }
 	@echo "  http://localhost:$(or $(RIG_SIM_PORT),8080)"
 	@echo "  from another machine:  http://$$(hostname -I | awk '{print $$1}'):$(or $(RIG_SIM_PORT),8080)"
+
+## clearance: live inter-arm clearance, from the collision gate's own model
+# What the gate would do, whether or not RIG_GATE is on. Bring two arms close,
+# read the number, compare with a ruler: a disagreement of more than ~2 cm
+# means the mounts in sim/rig_params.yaml are wrong and the gate must stay off.
+clearance:
+	@cd $(MAKEFILE_DIR) && $(COMPOSE) exec monitor ./rig_clearance.py
+
+## capsules: regenerate rig/capsules.yaml after a mesh, URDF or rig_params change
+capsules:
+	@cd $(MAKEFILE_DIR) && ./tools/fit_capsules.py && python3 rig/rig_collision.py
 
 ## debug: a SECOND tmux session for debugging one arm at a time
 # Joints, end-effector orientation and named poses -- the controls rig_key has

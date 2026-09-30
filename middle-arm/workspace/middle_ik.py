@@ -80,6 +80,30 @@ ORI_WEIGHT = float(os.environ.get("MIDDLE_ORI_WEIGHT", 25.0))
 DQ_WEIGHT = float(os.environ.get("MIDDLE_DQ_WEIGHT", 2.0))
 CENTER_WEIGHT = float(os.environ.get("MIDDLE_CENTER_WEIGHT", 1.0))
 
+# PER-JOINT MULTIPLIERS on the two terms above, in joint order
+#   [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate, camera_yaw].
+#
+# With every joint charged the same for moving, a head turn was answered by
+# the whole arm: the solver spread the yaw over waist, shoulder and elbow --
+# big links sweeping through the space the manipulators work in -- and
+# barely touched the camera's own yaw motor, which exists precisely to turn
+# the camera without moving anything else. So moving the big joints is now
+# expensive and moving the last two is cheap, and the centering pull is
+# strongest on the big joints too: a view change is spent on the wrist and
+# camera motors first, and the arm's bulk stays put and near its neutral
+# posture. Same intent as giava's active-vision setup. Tune per joint with
+# MIDDLE_DQ_SCALE / MIDDLE_CENTER_SCALE (comma lists); a missing entry is 1.
+DQ_SCALE = [float(v) for v in os.environ.get(
+    "MIDDLE_DQ_SCALE", "3.0,3.0,3.0,1.5,1.2,0.6,0.25").split(",")]
+CENTER_SCALE = [float(v) for v in os.environ.get(
+    "MIDDLE_CENTER_SCALE", "2.0,2.0,2.0,1.0,1.0,0.5,0.2").split(",")]
+
+
+def _per_joint(base, scale, n):
+    """base x scale as an (n,) vector; scale padded with 1s or truncated."""
+    sc = list(scale)[:n] + [1.0] * max(0, n - len(scale))
+    return np.asarray([float(base) * v for v in sc], dtype=np.float32)
+
 
 @jaxls.Cost.create_factory
 def previous_configuration_residual_scaled(vals, joint_var, prev_q, smoothness_scales):
@@ -171,6 +195,11 @@ def make_middle_arm_ik_solver(robot: pk.Robot, target_link_name: str):
         target_wxyz = _checked("target_wxyz", target_wxyz, (4,))
         prev_q = np.asarray(prev_q, dtype=np.float32)
         vel = np.asarray(joint_velocity_limits, dtype=np.float32)
+        n = len(prev_q)
+        dq_w = (_per_joint(dq_weight, DQ_SCALE, n) if np.ndim(dq_weight) == 0
+                else np.asarray(dq_weight, dtype=np.float32))
+        ce_w = (_per_joint(center_weight, CENTER_SCALE, n) if np.ndim(center_weight) == 0
+                else np.asarray(center_weight, dtype=np.float32))
         # No neutral posture given: centre on where the arm already is, which
         # makes the term a no-op rather than a pull toward an arbitrary zero.
         qc = (np.asarray(prev_q, dtype=np.float32) if q_center is None
@@ -181,8 +210,8 @@ def make_middle_arm_ik_solver(robot: pk.Robot, target_link_name: str):
             jnp.asarray(target_wxyz), jnp.asarray(np.float32(dt)),
             jnp.asarray(vel), jnp.asarray(np.float32(position_weight)),
             jnp.asarray(np.float32(orientation_weight)),
-            jnp.asarray(np.float32(active)), jnp.asarray(np.float32(dq_weight)),
-            jnp.asarray(qc), jnp.asarray(np.float32(center_weight)),
+            jnp.asarray(np.float32(active)), jnp.asarray(dq_w),
+            jnp.asarray(qc), jnp.asarray(ce_w),
         )
         if block_until_ready:
             q = jax.block_until_ready(q)

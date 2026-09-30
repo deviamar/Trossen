@@ -185,6 +185,50 @@ STOP_TICKS = 8
 # because a fault genuinely does reset it (and _lost() clears the cache).
 GRIP_REASSERT_S = float("inf")
 
+# GRIPPER POSITION COMMANDS ARE TRANSLATED TO FORCES. cmd_gripper (metres) used
+# to put the gripper in POSITION mode, and the next trigger pull put it back in
+# external_effort -- two mode writes per cycle, each one dropping the arm's
+# control loop for an instant. The arm sagged and caught every time, which is
+# the "torque disabled then re-enabled" the operator felt. With this false
+# (the default) an opening request becomes an opening FORCE and a closing
+# request a closing force, the mode never changes after connect, and the only
+# thing lost is commanding an exact opening -- which nothing in teleop needs.
+GRIPPER_POSITION_MODE = os.environ.get("ARM_GRIPPER_POSITION_MODE", "false").lower() == "true"
+GRIPPER_OPEN_FORCE_N = float(os.environ.get("ARM_GRIPPER_OPEN_N", 15.0))
+
+# DISABLE NO LONGER IDLES THE ARM. enable=false used to write Mode.idle, and
+# idle on this mount is not a hold: the loaded elbow sags through it. Then the
+# first command after re-enable wrote position mode and the arm caught itself.
+# Since the operator's engage button IS enable, that was a sag-and-catch on
+# every release. Now disable only stops accepting targets; the controller stays
+# in position mode holding its last goal, which is what "hold" should mean.
+# true restores the old behaviour.
+IDLE_ON_DISABLE = os.environ.get("ARM_IDLE_ON_DISABLE", "false").lower() == "true"
+
+# Acceleration caps on the commanded Cartesian velocity, so a target that
+# jumps (the first frame after engage, a flick of the wrist) is approached
+# with a ramp rather than a step. Bounded acceleration is what "smooth" means
+# mechanically: the joint torques stay continuous. m/s^2 and rad/s^2.
+MAX_LIN_ACC = float(os.environ.get("ARM_MAX_LIN_ACC", 1.0))
+MAX_ANG_ACC = float(os.environ.get("ARM_MAX_ANG_ACC", 4.0))
+
+# THE INTER-ARM COLLISION GATE. rig/rig_collision.py, mounted read-only into
+# every arm container. Before any joint command is sent it is checked against
+# where the OTHER arms were last reported; a command that would bring two
+# arms' capsules within the margin is not sent and the arm holds. See that
+# module's docstring for the guarantee and its limits. Off until the mount
+# positions in sim/rig_params.yaml are measured -- with the current estimates
+# the left arm reads as already inside the middle arm at rest.
+RIG_GATE = os.environ.get("RIG_GATE", "0").strip() == "1"
+RIG_GATE_FILE = os.environ.get("RIG_GATE_FILE", "/home/robot/rig/capsules.yaml")
+RIG_GATE_MARGIN = float(os.environ.get("RIG_GATE_MARGIN", 0.03))
+RIG_PEERS = {  # arm name in capsules.yaml -> its joint_states topic
+    "left_arm": "/left_arm/joint_states",
+    "right_arm": "/right_arm/joint_states",
+    "middle": "/middle/joint_states",
+}
+LIFT_HEIGHT_TOPIC = os.environ.get("RIG_LIFT_TOPIC", "/slate/lift/height")
+
 # NAMED MOVES ARE STAGED: this joint travels ALONE first, then everything else.
 #
 # The rig's start and rest poses differ almost entirely in the elbow -- a
@@ -599,6 +643,21 @@ class ArmAgent(Node):
         # otherwise ask the controller again at the same rate for a number it
         # has just been told.
         self.cart = None
+        # Last Cartesian velocity actually commanded, for the acceleration cap.
+        self.v_prev = None
+        # THE GRIPPER MODE THE CONTROLLER IS IN ("effort" | "position" | None).
+        # Separate from grip_applied (the last VALUE sent) on purpose: the
+        # value is re-sent freely, the mode is written only when it differs,
+        # and only a fault -- which really does reset the controller -- clears
+        # this. Enabling, disabling and pose moves leave it alone, because the
+        # controller's gripper mode survives all three.
+        self.hw_grip_mode = None
+        # Collision gate (rig_collision.RigGate) and this arm's name in it.
+        self.gate = None
+        self.me = None
+        self.gate_holding = False
+        self.gate_said = 0.0
+        self.gate_verdict = None
 
         self.create_subscription(PoseStamped, f"{ns}/cmd_pose", self._on_pose, 1)
         self.create_subscription(JointState, f"{ns}/cmd_joints", self._on_joints, 1)
@@ -621,7 +680,13 @@ class ArmAgent(Node):
         # JSON, 1 Hz: temperatures, efforts, the controller's own gravity
         # compensation and external-effort estimates. Diagnostic, not control.
         self.pub_health = self.create_publisher(String, f"{ns}/health", 1)
+        # JSON, 20 Hz: the collision gate's view of this arm -- worst pair,
+        # distance, margin, and whether it is holding. Empty gate = not on.
+        self.pub_clearance = self.create_publisher(String, f"{ns}/clearance", 1)
         self.create_timer(1.0, self._names_tick)
+
+        if RIG_GATE:
+            self._init_gate(ns)
 
         self.create_timer(1.0 / STREAM_HZ, self._control_tick)
         self.create_timer(1.0 / 20.0, self._state_tick)
@@ -655,27 +720,32 @@ class ArmAgent(Node):
                                     for i, p, lo, hi, _ in blocked)
                         + " -- the arm stays idle (and may sag). ./recover.py")
                 else:
-                    driver.set_arm_modes(trossen_arm.Mode.position)
-                    driver.set_arm_positions(
-                        [float(v) for v in now_q[:cfg.NUM_ARM_JOINTS]], 1.0, False)
-                    self.hw_mode = "position"
-                    self.mode_applied = "position"
+                    # ONE WRITE for all seven joints: arm in position, gripper
+                    # in external_effort. This used to be two calls -- the arm
+                    # hold, then set_gripper_mode() -- and the second dropped
+                    # the hold the first had just taken: a mode write on any
+                    # joint restarts the controller's loop, so the arm sagged
+                    # and caught itself at every startup.
+                    self._retake_hold(now_q, "startup")
                     self.get_logger().info(
-                        "holding at the startup pose (position mode) -- "
-                        "idle alone lets a loaded arm sag on this mount")
+                        "holding at the startup pose (position mode, gripper in "
+                        "effort mode, one write) -- idle alone lets a loaded arm "
+                        "sag on this mount")
             except Exception as e:
                 self.get_logger().warn(f"could not take hold at startup: {e}")
 
-        # ONE GRIPPER MODE FOR THE WHOLE SESSION: external_effort, set here.
+        # ONE GRIPPER MODE FOR THE WHOLE SESSION: external_effort. Set above
+        # together with the arm's hold; this is only the fallback for an arm
+        # that could not take hold (a joint outside its limits) and is idle.
         #
         # Both directions are forces -- close is negative, open is positive --
-        # so nothing during operation ever has to switch modes, and the arm
-        # never gets that momentary release. Position control of the gripper
-        # (<ns>/cmd_gripper) still works, but it costs one mode change, so it
-        # is for staging the fingers between tasks rather than for teleop.
-        if not dry_run:
+        # so nothing during operation ever switches modes, and the arm never
+        # gets that momentary release. cmd_gripper (a position) is translated
+        # to a force too unless ARM_GRIPPER_POSITION_MODE=true.
+        if not dry_run and self.hw_grip_mode is None:
             try:
                 driver.set_gripper_mode(trossen_arm.Mode.external_effort)
+                self.hw_grip_mode = "effort"
                 self.grip_applied = ("effort", 0.0)
                 self.grip_stamp = self.get_clock().now().nanoseconds * 1e-9
             except Exception as e:
@@ -688,6 +758,88 @@ class ArmAgent(Node):
             return
         self.driver.set_arm_modes(enum)
         self.hw_mode = name
+
+    def _retake_hold(self, now_q, why):
+        """Position-hold the arm where it is and put the gripper in effort
+        mode, in ONE mode write. Used at startup and after a cleared fault --
+        the two moments the controller is known to be idle. Re-applies the
+        last commanded grip force, so a fault mid-grasp does not drop the
+        object once the arm is back.
+        """
+        modes = ([trossen_arm.Mode.position] * cfg.NUM_ARM_JOINTS
+                 + [trossen_arm.Mode.external_effort])
+        self.driver.set_joint_modes(modes)
+        self.hw_mode = "position"
+        self.hw_grip_mode = "effort"
+        self.mode_applied = "position"
+        self.driver.set_arm_positions(
+            [float(v) for v in now_q[:cfg.NUM_ARM_JOINTS]], 1.0, False)
+        with self.lock:
+            force = self.grip_force
+        self.driver.set_gripper_external_effort(
+            float(force) if force is not None else 0.0, GOAL_TIME_S, False)
+        with self.lock:
+            self.grip_applied = ("effort", float(force) if force is not None else 0.0)
+            self.grip_stamp = self.get_clock().now().nanoseconds * 1e-9
+        self.get_logger().info(f"hold retaken ({why}): position + effort-mode gripper, one write")
+
+    def _init_gate(self, ns):
+        """Load rig/rig_collision.py and subscribe to the other arms."""
+        try:
+            sys.path.insert(0, os.path.dirname(RIG_GATE_FILE))
+            from rig_collision import RigGate
+            gate = RigGate(RIG_GATE_FILE, margins={"structure": RIG_GATE_MARGIN,
+                                                   "gripper": RIG_GATE_MARGIN})
+        except Exception as e:
+            self.get_logger().error(
+                f"collision gate REQUESTED but unavailable: {e} -- running WITHOUT it. "
+                f"Is {os.path.dirname(RIG_GATE_FILE)} mounted (docker-compose.yml)?")
+            return
+        me = gate.by_ns(ns)
+        if me is None:
+            self.get_logger().error(
+                f"collision gate: no arm with ns {ns!r} in {RIG_GATE_FILE} "
+                f"(have {[a.ns for a in gate.arms.values()]}) -- running WITHOUT it")
+            return
+        self.gate, self.me = gate, me
+        for peer, topic in RIG_PEERS.items():
+            if peer == me:
+                continue
+            self.create_subscription(
+                JointState, topic, lambda m, a=peer: self.gate.update(a, m.position), 1)
+        self.create_subscription(Float32, LIFT_HEIGHT_TOPIC,
+                                 lambda m: self.gate.set_lift(m.data), 1)
+        self.get_logger().info(
+            f"collision gate ON as {me!r}: margin {RIG_GATE_MARGIN * 1e3:.0f} mm "
+            f"(camera {gate.margins['camera'] * 1e3:.0f}, fingers "
+            f"{gate.margins['finger_pair'] * 1e3:.0f}), peers "
+            f"{[a for a in RIG_PEERS if a != me]}, {len(gate.arms[me].cap_r)} capsules")
+
+    def _gate_allows(self, q_goal, q_now, why):
+        """False if sending q_goal could bring this arm within the margin of
+        another. Logs the transition each way, throttled while holding."""
+        if self.gate is None:
+            return True
+        try:
+            v = self.gate.check(self.me, q_goal, q_now)
+        except Exception as e:
+            self.get_logger().error(f"collision gate failed ({e}) -- allowing {why}",
+                                    throttle_duration_sec=5.0)
+            return True
+        self.gate_verdict = v
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if v.ok:
+            if self.gate_holding:
+                self.gate_holding = False
+                self.get_logger().info(f"collision gate: clear again ({v})")
+            return True
+        if not self.gate_holding or now - self.gate_said > 2.0:
+            self.gate_said = now
+            self.get_logger().warn(
+                f"COLLISION GATE holding {why}: {v}. Back away; the arm holds until "
+                "the pair clears the margin.")
+        self.gate_holding = True
+        return False
 
     def _lost(self, where, exc):
         """One place to handle the arm going away mid-callback.
@@ -714,6 +866,7 @@ class ArmAgent(Node):
             self.joint_plan = None
             self.path_queue = []
             self.hw_mode = None        # a fault resets the controller's modes
+            self.hw_grip_mode = None   # ...the gripper's too
             self.losses += 1
             self.grip_applied = None
         # ---- is this a REJECTED COMMAND or a LOST ARM? ----------------
@@ -746,6 +899,24 @@ class ArmAgent(Node):
             # limit exceeded", dropped to idle, we cleared, it reconfigured,
             # and round again -- eight times a second. That was the jitter.
             arm.apply_limit_overrides(self.driver)
+            # The fault left every joint idle -- and idle sags on this mount.
+            # Take the hold back NOW, in one write, rather than leaving the
+            # arm to droop until the next command happens to arrive. Unless a
+            # joint sits outside its limits: position mode would fault again
+            # before reading a target, and the loop breaker below would then
+            # disarm for a reason that is really "walk it back in".
+            now_q = list(self.driver.get_all_positions())
+            blocked = arm.blocked_by_position(now_q, arm.limits(self.driver))
+            if blocked:
+                self.get_logger().warn(
+                    "not retaking the hold: "
+                    + "; ".join(f"{cfg.label(i)} at {p:.3f} outside [{lo:.3f}, {hi:.3f}]"
+                                for i, p, lo, hi, _ in blocked)
+                    + " -- idle (may sag). Jog it back inside its limits.")
+                with self.lock:
+                    self.hw_mode = "idle"
+            else:
+                self._retake_hold(now_q, "after fault")
             recovered = True
         except Exception:
             pass
@@ -778,10 +949,12 @@ class ArmAgent(Node):
             with self.lock:
                 self.enabled = was_enabled     # stay armed; only the target died
                 self.target = None
-                self.grip_applied = None
-                # The controller drops out of position mode when it faults, so
-                # the next command has to re-enter it rather than assume.
-                self.mode_applied = None
+                self.q_cmd = None              # re-seed from measured, no stale lead
+                self.v_prev = None
+                # _retake_hold put the controller back in position mode; the
+                # STREAM sub-mode (joint_ik / position) is re-entered on the
+                # next command, which costs no mode write.
+                self.mode_applied = "position"
                 self.losses -= 1               # not a loss; nothing was lost
                 now = self.get_clock().now().nanoseconds * 1e-9
                 say = now - self.fault_said > FAULT_LOG_S
@@ -831,8 +1004,12 @@ class ArmAgent(Node):
                 # would jump to wherever the operator was standing last time.
                 self.target = None
                 self.rejects = 0
-                self.grip_applied = None
-                self.mode_applied = None
+                self.v_prev = None
+                # grip_applied / hw_grip_mode are deliberately NOT cleared:
+                # the controller's gripper mode survives enable, and clearing
+                # the cache here is what made every first trigger pull after
+                # an enable re-write the mode -- one loop drop per engage.
+                self.mode_applied = None if self.hw_mode != "position" else "position"
                 self.pos_fallback = False
                 # ENABLING NO LONGER STARTS A SERVO.
                 #
@@ -844,20 +1021,31 @@ class ArmAgent(Node):
                 # then the arm stays idle, which is already a hold, so nothing
                 # is lost and arming is never itself a motion.
                 self.get_logger().info(
-                    "armed -- still idle and braked. Position control starts on "
-                    "the first motion command.")
+                    "armed -- holding where it is (position mode, no mode write). "
+                    "Motion starts on the first command.")
             elif not msg.data and self.enabled:
                 self.target = None
                 self.joint_plan = None
                 self.path_queue = []
-                self.grip_applied = None
-                if not self.dry_run and self.mode_applied is not None:
+                self.settle = None
+                self.v_prev = None
+                # A VELOCITY stream must be stopped explicitly (it would keep
+                # executing its last command) and a float must be braked, so
+                # those two still go to idle. Position streams do not: the
+                # controller is holding its last goal and that IS the hold --
+                # writing idle here was the sag-and-catch on every release.
+                must_idle = self.mode_applied in ("velocity", "float") or IDLE_ON_DISABLE
+                if not self.dry_run and must_idle and self.mode_applied is not None:
                     try:
                         self._ensure_arm_mode("idle", trossen_arm.Mode.idle)
                     except Exception as e:
                         self.get_logger().warn(f"could not return to idle: {e}")
-                self.mode_applied = None
-                self.get_logger().info("disabled -- holding position")
+                    self.mode_applied = None
+                    self.get_logger().info("disabled -- idle, braked hold")
+                else:
+                    self.mode_applied = "position" if self.hw_mode == "position" else None
+                    self.get_logger().info(
+                        "disabled -- holding in position mode (no mode change)")
             self.enabled = bool(msg.data)
 
     def _on_pose(self, msg):
@@ -1076,6 +1264,11 @@ class ArmAgent(Node):
                 f"{'+'.join(cfg.label(j) for j in stages[0])} over {goal_time:.1f} s")
         else:
             self.get_logger().info(f"{why}: moving over {goal_time:.1f} s")
+        if not self._gate_allows(list(stage1[:cfg.NUM_ARM_JOINTS]), current, why):
+            self.get_logger().error(
+                f"{why}: NOT started -- its first stage would bring this arm within "
+                "the collision margin of another. Move the other arm first.")
+            return
         try:
             self._ensure_arm_mode("position", trossen_arm.Mode.position)
             self.mode_applied = "position"
@@ -1096,8 +1289,14 @@ class ArmAgent(Node):
                     self.joint_plan = (list(target), n, why,
                                        now + goal_time + POSE_STAGE_SETTLE_S,
                                        stages, 1)
-            if n > cfg.GRIPPER_INDEX:
+            if n > cfg.GRIPPER_INDEX and not GRIPPER_POSITION_MODE:
+                self.get_logger().info(
+                    "gripper value in this joint command ignored: position control "
+                    "of the gripper is off (ARM_GRIPPER_POSITION_MODE)")
+            elif n > cfg.GRIPPER_INDEX:
                 self.driver.set_gripper_mode(trossen_arm.Mode.position)
+                with self.lock:
+                    self.hw_grip_mode = "position"
                 self.driver.set_gripper_position(
                     float(target[cfg.GRIPPER_INDEX]), goal_time, False)
                 # RECORD IT. This line put the gripper into POSITION mode while
@@ -1259,10 +1458,28 @@ class ArmAgent(Node):
             self.get_logger().info("float ended -- idle, braked hold")
 
     def _on_gripper(self, msg):
-        """Position control, metres. For STAGING the fingers, not grasping."""
+        """Opening in metres. Translated to a FORCE unless ARM_GRIPPER_POSITION_MODE.
+
+        An opening above the midpoint becomes the opening force, below it the
+        closing force: the fingers go the way that was asked and stop where
+        the mechanism (or the object) stops them, and the gripper never leaves
+        effort mode -- see GRIPPER_POSITION_MODE.
+        """
+        want = max(cfg.GRIPPER_CLOSED, min(cfg.GRIPPER_OPEN, float(msg.data)))
+        if not GRIPPER_POSITION_MODE:
+            mid = 0.5 * (cfg.GRIPPER_CLOSED + cfg.GRIPPER_OPEN)
+            force = GRIPPER_OPEN_FORCE_N if want >= mid else -cfg.GRASP_FORCE_N
+            self.get_logger().info(
+                f"cmd_gripper {want:.3f} m -> {force:+.0f} N (position control is "
+                "off so the gripper never changes mode; ARM_GRIPPER_POSITION_MODE=true "
+                "to command openings)", throttle_duration_sec=10.0)
+            with self.lock:
+                self.grip_force = force
+                self.gripper = None
+            self._apply_gripper()
+            return
         with self.lock:
-            self.gripper = max(cfg.GRIPPER_CLOSED,
-                               min(cfg.GRIPPER_OPEN, float(msg.data)))
+            self.gripper = want
             self.grip_force = None      # position wins; they are exclusive modes
         self._apply_gripper()
 
@@ -1321,22 +1538,28 @@ class ArmAgent(Node):
             want = (("effort", self.grip_force) if self.grip_force is not None
                     else ("position", self.gripper) if self.gripper is not None
                     else None)
-            applied = self.grip_applied
-            now = self.get_clock().now().nanoseconds * 1e-9
-            stale = now - self.grip_stamp > GRIP_REASSERT_S
+            hw = self.hw_grip_mode
         if want is None:
             return
 
         mode, value = want
         try:
-            if applied is not None and applied[0] != mode:
+            # THE MODE IS WRITTEN ONLY WHEN THE CONTROLLER IS NOT IN IT.
+            # hw_grip_mode is what the controller has; it is cleared by a
+            # fault and by nothing else. The old test compared against the
+            # last VALUE sent, which enable/disable cleared -- so the first
+            # trigger pull after every engage re-wrote an unchanged mode and
+            # dropped the arm's loop for it.
+            if hw is not None and hw != mode:
                 self.get_logger().warn(
-                    f"gripper mode {applied[0]} -> {mode}: the arm will twitch. "
+                    f"gripper mode {hw} -> {mode}: the arm will twitch. "
                     "Force (cmd_grip_force) both ways avoids this.")
-            if applied is None or applied[0] != mode or stale:
+            if hw != mode:
                 self.driver.set_gripper_mode(
                     trossen_arm.Mode.external_effort if mode == "effort"
                     else trossen_arm.Mode.position)
+                with self.lock:
+                    self.hw_grip_mode = mode
             if mode == "effort":
                 self.driver.set_gripper_external_effort(value, GOAL_TIME_S, False)
             else:
@@ -1349,8 +1572,7 @@ class ArmAgent(Node):
             self.grip_stamp = self.get_clock().now().nanoseconds * 1e-9
         self.get_logger().info(
             f"gripper: {mode} {value:+.3f}"
-            + ("" if applied and applied[0] == mode and not stale
-               else f"  (mode -> {mode})"))
+            + ("" if hw == mode else f"  (mode -> {mode})"))
 
     # ---- outputs ---------------------------------------------------------
     def _control_tick(self):
@@ -1544,6 +1766,12 @@ class ArmAgent(Node):
             with self.lock:
                 self.stage_goal = list(goal)
             goal_time = cfg.goal_time_for([goal[j] - current[j] for j in stages[k]])
+            if not self._gate_allows(goal[:cfg.NUM_ARM_JOINTS], current, f"{why} stage {k + 1}"):
+                # Keep the plan and try again next tick: the other arm may be
+                # on its way out of the way (both arms recalled at once).
+                with self.lock:
+                    self.joint_plan = (target, n, why, now + 0.2, stages, k)
+                return
             self.get_logger().info(
                 f"{why}: stage {k + 1}/{len(stages)} -- "
                 f"{'+'.join(cfg.label(j) for j in stages[k])} over {goal_time:.1f} s")
@@ -1671,6 +1899,7 @@ class ArmAgent(Node):
         lin_err = math.sqrt(sum(v * v for v in err_p))
         ang_err = 0.0 if hold else math.sqrt(sum(v * v for v in e_rot))
         if lin_err < SETTLE_M and ang_err < SETTLE_RAD:
+            self.v_prev = [0.0] * 6
             return None
         v_lin = [e * VEL_KP for e in err_p]
         n = math.sqrt(sum(v * v for v in v_lin))
@@ -1683,7 +1912,30 @@ class ArmAgent(Node):
             n = math.sqrt(sum(v * v for v in v_ang))
             if n > MAX_ANG_VEL:
                 v_ang = [v * MAX_ANG_VEL / n for v in v_ang]
-        return v_lin + v_ang
+        return self._limit_accel(v_lin + v_ang)
+
+    def _limit_accel(self, v):
+        """Slew the commanded velocity toward v at no more than MAX_*_ACC.
+
+        The proportional law above is continuous in the ERROR, but the error
+        itself steps whenever the target does -- the first frame after
+        engage, a hand flick, a dropped tracking frame coming back -- and a
+        step in commanded velocity is a step in joint torque. This turns
+        every such step into a ramp of known slope, which is the difference
+        between an arm that glides and one that snatches.
+        """
+        if self.v_prev is None:
+            self.v_prev = [0.0] * 6
+        dt = 1.0 / STREAM_HZ
+        out = list(v)
+        for lo, hi, cap in ((0, 3, MAX_LIN_ACC * dt), (3, 6, MAX_ANG_ACC * dt)):
+            dv = [out[i] - self.v_prev[i] for i in range(lo, hi)]
+            n = math.sqrt(sum(x * x for x in dv))
+            if n > cap:
+                for k, i in enumerate(range(lo, hi)):
+                    out[i] = self.v_prev[i] + dv[k] * cap / n
+        self.v_prev = list(out)
+        return out
 
     def _stream_joint_ik(self, target):
         """Our IK: Cartesian velocity -> joint velocities via damped least squares.
@@ -1739,14 +1991,30 @@ class ArmAgent(Node):
         # run away. (A 10 %-per-tick pull toward measured was tried first: the
         # command never got ahead of a lagging controller and the arm sat
         # still while the solver kept asking.)
+        prev_cmd = list(self.q_cmd)
         self.q_cmd = [c + float(d) * dt for c, d in zip(self.q_cmd, dq)]
         self.q_cmd = [m + max(-IK_JOINT_LEAD, min(IK_JOINT_LEAD, c - m))
                       for c, m in zip(self.q_cmd, q)]
+        # THE GATE, on the configuration actually about to be sent. Refused:
+        # nothing is sent (position mode keeps holding the last goal) and the
+        # integrator is wound back so the refusal does not accumulate into a
+        # lunge the moment the pair clears.
+        if not self._gate_allows(self.q_cmd, q, "stream"):
+            self.q_cmd = prev_cmd
+            self.v_prev = [0.0] * 6
+            return
         # Goal a few ticks out WITH the solved rates as feed-forward, so the
         # controller tracks a moving target instead of restarting a 30 ms
-        # trajectory from rest every 20 ms.
+        # trajectory from rest every 20 ms. The goal time GROWS WITH THE LEAD:
+        # the command may sit up to IK_JOINT_LEAD ahead of a joint that is
+        # lagging (gravity, or blocked), and a 60 ms window over that gap is
+        # a lunge the instant the joint frees. Stretching the window bounds
+        # the joint speed the controller can ask for at MAX_JOINT_VEL however
+        # large the accumulated lead is.
+        lead = max(abs(c - m) for c, m in zip(self.q_cmd, q))
+        goal_time = max(IK_GOAL_TIME_S, lead / MAX_JOINT_VEL)
         self.driver.set_arm_positions(
-            [float(x) for x in self.q_cmd], IK_GOAL_TIME_S, False,
+            [float(x) for x in self.q_cmd], goal_time, False,
             [float(x) for x in dq])
 
     def _wind_down(self):
@@ -1783,8 +2051,27 @@ class ArmAgent(Node):
                     if self.mode_applied != "joint_ik":
                         self.mode_applied = None
                     self.settled = False
+                    self.v_prev = None
         except Exception as e:
             return self._lost("_wind_down", e)
+
+    def _publish_clearance(self, q):
+        """What the gate sees for this arm right now, as JSON."""
+        try:
+            v = self.gate.clearance(self.me, q)
+        except Exception:
+            return
+        m = String()
+        m.data = json.dumps({
+            "arm": self.me,
+            "holding": bool(self.gate_holding),
+            "distance_m": None if not math.isfinite(v.distance_m) else round(v.distance_m, 4),
+            "margin_m": round(v.margin_m, 4),
+            "slack_m": None if not math.isfinite(v.slack_m) else round(v.slack_m, 4),
+            "pair": list(v.pair) if v.pair else None,
+            "peers": v.peers, "missing": v.skipped,
+        })
+        self.pub_clearance.publish(m)
 
     def _state_tick(self):
         try:
@@ -1799,6 +2086,9 @@ class ArmAgent(Node):
         except Exception as e:
             return self._lost("_state_tick", e)
         self._stall_guard(pos, eff, vel)
+        if self.gate is not None:
+            self.gate.update(self.me, pos[:cfg.NUM_ARM_JOINTS])
+            self._publish_clearance(pos[:cfg.NUM_ARM_JOINTS])
         temps = [max(r, d) for r, d in zip(rotor, drv)]
         with self.lock:
             self.cart = list(cart)
