@@ -1,354 +1,217 @@
-# Trossen rig — Dockerized ROS 2 setup
+# Trossen rig
 
-Containers for a mobile-ALOHA-style rig. Each component is its own image because
-they genuinely do not share a software stack; they meet at ROS 2 Humble and talk
-over DDS.
+A mobile-ALOHA-style rig: a SLATE AGV base, two WidowX AI manipulators, a
+WidowX-250 camera arm, and a Meta Quest headset to drive it all. Every
+component runs in its own Docker container; they talk over ROS 2 topics.
+
+This file is the runbook. Design and interface docs live in [docs/](docs/):
+[topic-contract.md](docs/topic-contract.md) is the interface between
+containers, [frames.md](docs/frames.md) the frame tree, and
+[JETSON.md](docs/JETSON.md) what differs on the Orin. Each container directory
+has its own README with the details for that piece of hardware.
 
 ```
 Trossen/
-├── docker-compose.yml   the whole rig — `include:`s the five below
-├── setup.sh             per-machine bootstrap — run once after cloning
-├── docs/
-│   ├── ROADMAP.md             what is built, what is next, in order
-│   ├── frames.md              every frame defined, + what to measure
-│   ├── topic-contract.md      the ONLY interface between containers
-│   └── topics-by-container.md which container owns which topic
-├── third_party/pyroki/  submodule — JAX kinematics, for the active-vision arm's IK
-├── manip-arm/           WidowX AI ×2 — left-arm + right-arm, trossen_arm SDK, Ethernet
-├── middle-arm/          WidowX-250 + camera — Interbotix, USB serial
-├── slate-base/          SLATE AGV — drive (x, y) + lift (z), USB serial
-├── quest/               Meta Quest teleop source — no hardware but a socket
-└── monitor/             watch every topic, smoke-test the base
+├── Makefile             every command below; `make help` lists them all
+├── docker-compose.yml   the whole rig, includes the per-container files
+├── setup.sh             per-machine bootstrap, run once after cloning
+├── manip-arm/           left-arm + right-arm (WidowX AI, Ethernet)
+├── middle-arm/          camera arm (WidowX-250, USB)
+├── slate-base/          AGV base + scissor lift (USB)
+├── quest/               headset teleop
+├── monitor/             watch topics, keyboard control, arm pose commands
+└── sim/                 the rig drawn live in a browser
 ```
 
-## Starting everything
+## 1. Clone and set up a machine
+
+Prerequisites: Docker Engine with the Compose plugin (v2.20 or newer), git,
+and your user in the `docker` group.
 
 ```bash
-docker compose build       # first time, or after any Dockerfile change
-docker compose up -d       # every container, every node, every topic live
-docker compose ps
-docker compose down
+git clone --recursive <repo-url> Trossen      # --recursive pulls pyroki for the camera arm's IK
+cd Trossen
+./setup.sh                                    # writes .env with this machine's UID/GID
+./middle-arm/host-setup/setup-host.sh         # udev rule -> /dev/ttyDXL
+./slate-base/host-setup/setup-host.sh         # udev rule -> /dev/ttySLATE, removes brltty
 ```
 
-**`up -d` is all of it.** Each container autostarts its own nodes (`start.sh`),
-so when that command returns the drivers are running, the agents are listening
-and every topic in
-[docs/topics-by-container.md](docs/topics-by-container.md) is being published.
-Check with:
+If `setup.sh` reports you are not in the docker group, run
+`sudo usermod -aG docker $USER` and log out and back in before continuing.
+
+**The two manipulators need a static IP on the wired NIC** connected to the
+Ethernet switch. Docker inherits it from the host and cannot set it itself.
+Find the interface name with `ip -br link`, then:
 
 ```bash
-docker compose exec monitor ./watch.py
+sudo nmcli con add type ethernet ifname <nic> con-name trossen-arm \
+  ipv4.method manual ipv4.addresses 192.168.1.1/24
+sudo nmcli con up trossen-arm
+ip -br addr show <nic>        # must say UP and 192.168.1.1/24
 ```
 
-Two things it does **not** do, both deliberate: the base's motors stay untorqued
-(`./base_ctl.py torque on`), and the Quest starts on the `sim` backend rather
-than reaching for your headset.
+The left arm is 192.168.1.2 and the right arm 192.168.1.3. Every WidowX AI
+ships on .2, so a replacement arm must be re-addressed before both are plugged
+into the switch. The procedure is in
+[manip-arm/README.md](manip-arm/README.md#two-arms-on-one-switch).
 
-Set `AUTOSTART=false` on a service for a bare shell instead. You need that for
-the manipulator CLIs — `arm_agent.py` holds the arm's only connection, so
-`pose.py` and friends cannot run beside it.
-
-Each project still works on its own — `cd slate-base && docker compose up -d`
-means exactly what it always did. The top-level file composes them, it does not
-replace them.
-
-## Day to day
-
-### Which command does what
-
-| You changed | Do this |
-|---|---|
-| A script in a `workspace/` folder | `docker compose restart <service>` — the folder is bind-mounted, so there is nothing to rebuild; the container just has to restart the node that imported the old copy |
-| A `Dockerfile` or `requirements.txt` | `docker compose up -d --build <service>` |
-| A `docker-compose.yml` | `docker compose up -d <service>` — Compose recreates what the file changed |
-| Nothing; you just want it running | `docker compose up -d` |
-
-`--build` rebuilds and recreates in one step. There is no need to `down` first
-and no need to delete anything — Compose replaces the container in place.
-
-### "no such service: monitor"
-
-You are in a subdirectory. `~/Trossen/slate-base` is the **slate-base project**
-and it contains one service; `monitor`, `left-arm` and the rest are different
-projects. Run multi-service commands from the repo root:
+**For headset control** the quest container bind-mounts the gvlink protocol
+library from the Unity repo. Clone it next to this one:
 
 ```bash
-cd ~/Trossen
-docker compose up -d slate-base monitor
+git clone -b v2 https://github.com/Soltanilara/av-aloha-unity.git ~/av-aloha-unity
 ```
 
-### "container name is already in use"
-
-```
-Conflict. The container name "/slate-base" is already in use
-```
-
-This is not a broken container. Every service here has an explicit
-`container_name:`, which is **global to the Docker daemon rather than scoped to
-a Compose project** — that is what lets you type
-`docker compose exec slate-base` instead of `trossen-slate-base-1`. The cost is
-that the root project and a per-directory project cannot both have their
-containers up at once.
-
-You have hit it because something is already running from `slate-base/`. Bring
-that down, then start from the root:
+**Then build.** This takes about half an hour on a desktop and several hours on
+a Jetson; [docs/JETSON.md](docs/JETSON.md#build) covers building elsewhere and
+pulling the images instead.
 
 ```bash
-cd ~/Trossen/slate-base && docker compose down
-cd ~/Trossen && docker compose up -d
+make build
 ```
 
-Or remove the stray container directly, if you no longer know which project made it:
+Check the machine-specific pieces came out right:
 
 ```bash
-docker rm -f slate-base
+make check      # .env present in every project, container UIDs match, ipc=host
 ```
 
-**Pick one place to run `up` from and stay there.** The root is the better
-default now that every container autostarts; the per-directory files exist so a
-single subsystem can be worked on alone.
+## 2. Headset control
 
-### `ros2: command not found` on the host
-
-Inside the containers ROS is always sourced — entrypoint, `~/.bashrc` and
-`$BASH_ENV` all do it, so `exec <svc> bash` and `exec <svc> bash -lc '...'` both
-work. On the **host** nothing has sourced it:
+One command brings up every container, waits for the arm agents to connect,
+moves all arms to their saved `start` pose, and then hands them to the headset:
 
 ```bash
-source ~/Trossen/env.sh     # ROS 2 + ROS_DOMAIN_ID=42 + the pinned RMW
-ros2 topic list
+make quest
 ```
 
-To have it in every shell:
+**Watch the arms during the move to `start`.** The command waits 15 s for that
+move before handing over; use `make quest POSE_WAIT=25` if the arms are far
+from it. Ctrl-C ends teleop and releases the arms.
+
+On the headset, pick the robot named `trossen` from the app's robot list. The
+headset and the rig must be on the same network; the rig finds nothing across
+a router.
+
+First time, or after changing the mapping, run the chain without a headset
+before trusting it:
 
 ```bash
-echo 'source ~/Trossen/env.sh' >> ~/.bashrc
+make quest QUEST_BACKEND=sim          # a fake circle drives the arms, no headset needed
 ```
 
-This works at all because every container uses `network_mode: host` — your shell
-and the containers share one network stack, so host-side `ros2` tools see
-container topics directly. The domain ID and RMW in `env.sh` must match the
-compose files; if they do not you get an empty topic list and no error at all.
+Controls:
 
-If the host has no ROS installed, use the monitor container instead — it exists
-for exactly this:
+| Input | Does |
+| --- | --- |
+| **A** (right, hold) | right arm follows the right controller |
+| **X** (left, hold) | left arm follows the left controller |
+| either held | camera arm follows your head |
+| **Y** (tap) | look-around on and off: camera arm follows your head, hands free |
+| **B** (double-tap) | every arm to `rest`, then the session ends |
+| Index trigger | that arm's gripper, analog closing force |
+| Left stick | drive and turn the base |
+| Right stick fwd/back | scissor lift up and down |
 
-```bash
-docker compose exec monitor ./watch.py
-```
-
-### Do I still need `exec`?
-
-For starting things, no — that is what autostart replaced. `docker compose up -d`
-brings up every node and every topic; nothing has to be launched by hand.
-
-`exec` is only for getting a shell or a terminal tool inside a container that is
-already running:
-
-```bash
-docker compose logs -f slate-base                    # what the nodes are printing
-docker compose exec monitor ./watch.py               # a live view of every topic
-docker compose exec slate-base bash -lc './base_ctl.py torque on'
-docker compose exec quest bash                       # interactive, for keyboard_teleop
-```
-
-The things that genuinely need it are the interactive ones — `watch.py`,
-`keyboard_teleop.py`, anything reading single keypresses — because they need a
-terminal attached, which a background service does not have.
-
-## How the containers talk
-
-**Only ROS topics, only standard message types.** No shared volume, no shared
-Python module, no custom `.msg` package, no service call from one component into
-another. The full interface is [docs/topic-contract.md](docs/topic-contract.md).
-
-That constraint is the point. A custom message package would have to be built
-into every image that touches it, so one interface change would force a
-simultaneous rebuild of all six — precisely the coupling this layout exists to
-avoid. Standard types cost some readability and buy the ability to rebuild any
-one container, in any language, while the rest keep running.
-
-Two consequences worth stating:
-
-- **Components never know who is driving them.** `/slate/cmd_vel_teleop` is
-  owned by the base; the Quest is one possible publisher. Swap it for a gamepad
-  or a policy and no robot container changes.
-- **Safety lives with the hardware, not the client.** The base's velocity clamp
-  is in `slate-base/workspace/governor.py`, inside the container that owns the
-  serial port, because an input device is now something you can rebuild or get
-  wrong. The vendor driver does not clamp at all — see the topic contract.
-
-## Teleoperating
-
-```bash
-# one shell each -- these are long-running nodes, not CLIs
-docker compose exec left-arm   bash -lic './arm_agent.py'
-docker compose exec right-arm  bash -lic './arm_agent.py'
-docker compose exec middle-arm bash -lc  './launch-arm.sh'         # driver first
-docker compose exec middle-arm bash -lc  './head_agent.py --urdf /tmp/wx250s.urdf'
-docker compose exec slate-base bash -lc  './governor.py'           # base safety layer
-docker compose exec quest ./launch-quest.sh --backend sim          # start here
-```
-
-Then hold **A** for the right arm, **X** for the left, either to move the camera
-arm with your head, triggers squeeze the grippers (analog closing force), the
-left stick drives and turns the base, and the right stick runs the scissor
-lift's z (simulated until the lift is wired). Swap to `--backend webrtc` once
-the chain looks right on `sim`. Full controls and bring-up order in
+Driving and the lift are locked out while an arm is engaged. Let go, drive,
+re-engage. The full control reference and the transport backends are in
 [quest/README.md](quest/README.md).
 
-The camera arm needs a URDF for its solver, generated from the same xacro the
-driver uses and then prepared -- `prep_urdf.py` strips the gripper joint the
-vendor xacro emits for a servo this arm does not have, and grafts `camera_link`
-on with the `MIDDLE_ZED_*` offsets (start.sh does both automatically):
+**Do not run headset and keyboard control at the same time.** Both publish to
+the same command topics and the newest message wins, which looks like the arms
+stuttering rather than like a conflict.
+
+## 3. Keyboard control (legacy)
+
+For driving the rig without a headset, or for moving arms one step at a time:
 
 ```bash
-docker compose exec middle-arm bash -lc './launch-arm.sh --dump-urdf | ./prep_urdf.py' > /tmp/wx250s.urdf
+make up           # every container, if not already running
+make tmux         # one tmux session: live status on the left, keyboard control on the right
 ```
 
-`arm_agent.py` holds an arm's single SDK connection, so `pose.py`,
-`read_joints.py` and `teach.py` cannot run against that arm while it is up.
-That is the controller's rule, not a design choice.
+Nothing moves until you enable it. In the control pane:
 
+| Key | Does |
+| --- | --- |
+| `1` `2` `3` | enable left arm, middle arm, right arm |
+| `0` | torque the base |
+| `SPACE` | everything on or off (the panic key) |
+| `q w e` / `a s d` | left arm +x +y +z / −x −y −z |
+| `r t y` / `f g h` | middle arm |
+| `u i o` / `j k l` | right arm |
+| `z` `x`, `n` `m` | left and right gripper open, close |
+| arrows | drive the base (dead-man: stops when released) |
+| `,` `.` | lift down, up |
+| `[` `]` | step size |
+| `ESC` | quit |
 
-| | `manip-arm/` | `middle-arm/` | `slate-base/` |
-|---|---|---|---|
-| Hardware | WidowX AI `wxai_v0` ×2 | WidowX-250 6DOF `wx250s` | SLATE AGV |
-| Driver | `trossen_arm` SDK | `interbotix_xs_sdk` | `interbotix_slate_driver` |
-| Transport | Ethernet / IP | DYNAMIXEL over U2D2 (FTDI `0403:6014`) | CH340 `1a86:7523` |
-| Host needs | static IP on the NIC | udev rule → `/dev/ttyDXL` | udev rule, no `brltty` |
-| GPU | not required | only for the ZED variant | not required |
-| Builds on | any architecture | amd64 / arm64 | amd64 / arm64 only |
-
-All containers run `network_mode: host` with the same `ROS_DOMAIN_ID`, so they
-form one DDS graph — `ros2 topic list` in any container sees every other.
-
-The base is the one component that can drive itself into something, so its
-container namespaces every topic under `/slate` rather than leaving `/cmd_vel`
-at the graph root, and its scripts clamp velocity client-side. See
-[slate-base/README.md](slate-base/README.md) for why the driver's own clamp does
-not apply on the ROS path.
-
-## Setting up on a new computer
-
-**Prerequisites:** Docker Engine with the Compose plugin, and git. Nothing else —
-ROS 2, the drivers, and every vendor stack are built into the images.
+`Ctrl-b d` detaches and leaves everything running; `tmux attach -t rig` comes
+back. When you are done:
 
 ```bash
-git clone <your-repo-url> Trossen
-cd Trossen
-git submodule update --init --recursive # pyroki, for the middle arm's IK
-./setup.sh                              # writes .env with this machine's UID/GID
+make kill         # ends the tmux session and the control processes inside the containers
 ```
 
-Then per container. The middle arm needs one privileged step first, because udev
-runs in the host kernel and a container can only see device nodes the host has
-already created:
+`make key` runs the keyboard tool alone, without tmux, and `make debug` opens a
+second session for joint-level control of one arm.
+
+## 4. A session on the Jetson
+
+Power the rig, give it a minute, then from your laptop:
 
 ```bash
-./middle-arm/host-setup/setup-host.sh   # udev rules (+ NVIDIA toolkit for ZED)
-cd middle-arm
-docker compose build                    # ~20-30 min, ~5 GB (arm-only variant)
-docker compose up -d
-docker compose exec middle-arm bash
+ssh <user>@<jetson>
+cd ~/Trossen
+make up                       # or `make quest` to go straight to headset teleop
+make status                   # which containers are up, one line per subsystem
 ```
 
-Inside, verify before trusting it:
+`make up` starts every driver and agent. Two things it deliberately does not do:
+the base's motors stay off until `make torque` or an enable from teleop, and the
+quest container sits idle until `make quest` or `make tmux` starts teleop.
+
+While it runs:
 
 ```bash
-ros2 pkg list | grep interbotix     # arm stack present
-ls -l /dev/ttyDXL                   # serial port visible
-./launch-arm.sh --sim               # full stack, no hardware needed
+make watch                    # live table of every topic and its rate
+make logs SVC=left-arm        # follow one container's output
+make arms                     # where every arm is, and the poses it knows
+make home EXECUTE=1           # every arm to its saved `home` pose, joint-space
+make arm-stop                 # release every arm
+make shell SVC=monitor        # a shell inside a container
 ```
 
-See [middle-arm/README.md](middle-arm/README.md) for the arm's own docs —
-launching, the gripperless configs, and the helper scripts.
-
-The mobile base needs its own privileged step, for the same udev reason plus one
-more: Ubuntu's `brltty` claims the base's USB-serial chip as a braille display
-and takes the port away seconds after it enumerates.
+Done for the day:
 
 ```bash
-./slate-base/host-setup/setup-host.sh   # udev rules; offers to remove brltty
-cd slate-base
-docker compose build                    # ~10-15 min
-docker compose up -d
-docker compose exec slate-base bash
+make kill                     # if a tmux session was open
+make down                     # stop every container
 ```
 
-```bash
-ros2 pkg list | grep slate          # driver present
-ls -l /dev/ttySLATE                 # base connected and powered
-./launch-base.sh                    # no --sim equivalent; needs real hardware
-./base_ctl.py torque on             # the base ignores /cmd_vel until you do this
-./read_base.py                      # position, battery, E-stop
-```
+Two hardware rules:
 
-**The base powers on with its motors released** and silently ignores every
-velocity command until `torque on` — that catches everyone once.
+- **Never restart or stop the middle-arm container while the arm is up.** That
+  kills its driver, torque drops, and the arm falls. To reload the agent code,
+  restart only the python process inside the container.
+- **The manipulator containers are safe to restart.** The agent re-takes a
+  position hold, but `arm_agent.py` holds the arm's only connection, so the
+  per-arm CLIs in `manip-arm/workspace/` cannot run while it is up.
 
-Start with **[slate-base/README.md](slate-base/README.md)**, which opens with a
-step-by-step quick start, a command reference and a troubleshooting table. The
-rest of it covers the full ROS interface (which the vendor documentation does
-not list at all), the 300 ms `/cmd_vel` deadline, how to read the E-stop, and
-the duplicate-driver failure that is the one genuinely confusing thing about
-this container.
+After editing a script in any `workspace/` folder, `make restart SVC=<service>`
+is enough; the folder is bind-mounted. After a Dockerfile change, `make rebuild
+SVC=<service>`.
 
-## What transfers, and what doesn't
+## When something is wrong
 
-The images are the portable part. Everything below is per-machine and is the
-reason `setup.sh` and `host-setup/` exist:
-
-| Thing | Why it can't be in the image |
-|---|---|
-| **UID/GID** (`.env`) | The container user is built to match the host user so bind-mounted files aren't root-owned. Wrong on any machine where you aren't the same UID — this one is 1003, not 1000. |
-| **udev rules** | udev runs in the host kernel; a container only sees nodes the host already made. |
-| **NVIDIA toolkit** | Wires the host GPU driver into the container runtime. Host-side by definition. |
-| **`xhost +local:docker`** | Per login session, not persistent. Needed for RViz. |
-| **Static IP on the NIC** | A host-OS setting. `--network host` inherits it; Docker cannot assign it. |
-| **Removing `brltty`** | A host package whose udev rule steals the SLATE base's CH340 port. Nothing inside a container can stop it. |
-
-Also machine-specific, and worth checking rather than assuming:
-
-- **The U2D2's FTDI serial.** The shipped udev rule symlinks *any* U2D2 to
-  `/dev/ttyDXL`, which races if a second one is ever attached. Keying on the
-  serial is documented at the bottom of
-  [99-interbotix-udev.rules](middle-arm/host-setup/99-interbotix-udev.rules).
-- **Motor configs describe YOUR arm.** `middle-arm/workspace/config/` encodes a
-  wx250s with the gripper (DYNAMIXEL ID 9) removed and a camera in its place. An
-  arm with its gripper still fitted needs the stock vendor configs instead.
-- **Build reproducibility.** The vendor repos are cloned at branch `humble` and
-  the ZED wrapper at `master`. Two machines built weeks apart can get different
-  upstream commits. Pin to tags or SHAs once a setup is proven.
-
-## Faster than rebuilding: push the image
-
-`docker compose build` on a new machine re-clones and re-compiles the vendor
-stacks (~30 min). If you are setting up several machines, build once and push to
-a registry instead:
-
-```bash
-# once, on the machine that already built it
-docker tag middle-arm:latest ghcr.io/<user>/middle-arm:latest
-docker push ghcr.io/<user>/middle-arm:latest
-
-# on each new machine — minutes instead of half an hour
-docker pull ghcr.io/<user>/middle-arm:latest
-docker tag ghcr.io/<user>/middle-arm:latest middle-arm:latest
-cd middle-arm && docker compose up -d       # compose finds the local tag, skips build
-```
-
-The catch: the image bakes in the UID/GID it was built with. If the target
-machine's user is not the same UID, either rebuild there or accept root-owned
-files in `workspace/`.
-
-## Known issue
-
-The U2D2 on this rig has re-enumerated to a new `/dev/ttyUSB*` several times
-during a session (roughly every 20–35 minutes under load). The udev symlink
-follows correctly and the container sees the new device immediately, but the
-running `xs_sdk` does not — it either keeps a dead descriptor and publishes
-garbage (−π on every joint, absurd velocities) or exits outright. Relaunching
-recovers it. Suspect the USB cable, its routing along a moving arm, or supply
-sag near a hard stop before suspecting software. `robot_control.joint_states_look_valid()`
-detects the garbage-data case programmatically.
+| Symptom | Cause and fix |
+| --- | --- |
+| `container name "/slate-base" is already in use` | Something was started from a subdirectory. Run `cd slate-base && docker compose down`, then `make up` from the root. Always run from the root. |
+| `ros2 topic list` shows everything, but no messages arrive | A container is on a different UID or lacks `ipc: host`. `make check` names it; `make env` rewrites `.env`, then `make rebuild`. |
+| Arm container up, driver times out | The wired NIC is DOWN or lost its address. `ip -br addr show <nic>`, then `sudo nmcli con up trossen-arm`. |
+| Both arm containers move the same arm | Both arms are on 192.168.1.2. Re-address one, see manip-arm/README.md. |
+| `permission denied ... /var/run/docker.sock` | Not in the docker group. `sudo usermod -aG docker $USER`, log out and in. |
+| quest: `ImportError` from the gvlink backend | `~/av-aloha-unity` is missing. Clone it (section 1) and `make up`. |
+| quest: `error gathering device information` for `/dev/videoN` | The stereo camera index differs per host. `export QUEST_CAMERA=/dev/video0` (video4 on the laptop) before `make up`. |
+| Base ignores velocity commands | Motors are untorqued. `make torque`. |
+| `ros2: command not found` on the host | `source ~/Trossen/env.sh`, or use the monitor container (`make watch`). |
